@@ -36,7 +36,7 @@ supabase = get_supabase_client()
 
 # 4. DATA ENGINE (REAL EXCHANGE CONNECTOR & SYNC VS PREVIEW SIMULATION)
 st.sidebar.title("⚙️ Control Panel")
-mode = st.sidebar.radio("Data Engine Mode", ["🔮 Preview Simulation Mode", "🔗 Live OKX + Supabase Sync"])
+mode = st.sidebar.radio("Data Engine Mode", ["🔮 Preview Simulation Mode", "🔗 Live Account + Supabase Sync"])
 
 def get_mock_data():
     """Generates 40 realistic closed trades across BTC/ETH contracts for preview modeling."""
@@ -139,7 +139,7 @@ def fetch_live_okx_and_sync():
                     new_records += 1
             sync_status = f"Sync Completed! Tracked and added {new_records} entries to database."
         else:
-            sync_status = "No recent swap executions found on your live OKX account within 30 days."
+            sync_status = "No recent swap executions found on your live account within 30 days."
             
     except Exception as e:
         sync_status = f"API Synchronization Bridge Warning: {str(e)}"
@@ -237,7 +237,7 @@ if df.empty:
     st.info("Your permanent historical database vault table is currently empty.")
     st.warning(f"Sync Gateway Log: {sync_status}")
 else:
-    if mode == "🔗 Live OKX + Supabase Sync":
+    if mode == "🔗 Live Account + Supabase Sync":
         st.toast(sync_status, icon="🔄")
 
     # Core Metric Matrix Blocks
