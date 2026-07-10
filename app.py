@@ -38,7 +38,7 @@ if not check_password():
 def fetch_okx_futures_data():
     try:
         # Fetching credentials securely from secrets
-        exchange = ccxt.okx({
+        exchange = ccxt.myokx({
             'apiKey': st.secrets["OKX_API_KEY"],
             'secret': st.secrets["OKX_SECRET"],
             'password': st.secrets["OKX_PASSPHRASE"], # OKX requires an API passphrase
