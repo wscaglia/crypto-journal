@@ -34,83 +34,95 @@ if not check_password():
     st.stop()
 
 # 3. OKX API CONNECTOR
-@st.cache_data(ttl=300) # Caches data for 5 minutes so it doesn't spam OKX on every click
+@st.cache_data(ttl=300)
 def fetch_okx_futures_data():
     try:
-        # Fetching credentials securely from secrets
         exchange = ccxt.myokx({
             'apiKey': st.secrets["OKX_API_KEY"],
             'secret': st.secrets["OKX_SECRET"],
-            'password': st.secrets["OKX_PASSPHRASE"], # OKX requires an API passphrase
+            'password': st.secrets["OKX_PASSPHRASE"],
             'options': {
-                'defaultType': 'swap', # 'swap' fetches perpetual futures in CCXT
+                'defaultType': 'swap',
             }
         })
         
-        # Pull closed positions / orders history (Adjust limit as needed)
-        # Note: OKX divides trade data into orders and account bills. 
-        # CCXT's fetch_my_trades parses closed order execution histories cleanly.
-        trades = exchange.fetch_my_trades(limit=50)
+        # Load markets first so CCXT understands OKX symbols properly
+        exchange.load_markets()
         
-        # Parse into a clean DataFrame
-        trade_list = []
-        for t in trades:
-            trade_list.append({
-                "Date": pd.to_datetime(t['datetime']),
-                "Symbol": t['symbol'],
-                "Side": t['side'],
-                "Price": t['price'],
-                "Amount": t['amount'],
-                "Cost": t['cost'],
-                "Fee": t.get('fee', {}).get('cost', 0)
+        # Try fetching the last 100 ledger/bills entries instead of just basic recent trades.
+        # This includes realized PnL, trading fees, and funding fees.
+        ledger = exchange.fetch_ledger(code=None, since=None, limit=100, params={'type': '1'}) # Type 1 = Derivatives/Futures on OKX
+        
+        if not ledger:
+            # Fallback: try fetching normal trades if ledger is empty
+            trades = exchange.fetch_my_trades(limit=100)
+            if not trades:
+                return pd.DataFrame(), None
+            
+            trade_list = []
+            for t in trades:
+                trade_list.append({
+                    "Date": pd.to_datetime(t['datetime']),
+                    "Symbol": t['symbol'],
+                    "Side": t['side'],
+                    "Price": t['price'],
+                    "Amount": t['amount'],
+                    "Cost": t['cost'],
+                    "Fee": t.get('fee', {}).get('cost', 0),
+                    "Type": "Trade Execution"
+                })
+            return pd.DataFrame(trade_list), None
+
+        # Parse Ledger data
+        ledger_list = []
+        for item in ledger:
+            ledger_list.append({
+                "Date": pd.to_datetime(item['datetime']),
+                "Symbol": item.get('symbol', 'Account Level'),
+                "Type": item.get('type', 'Other'),
+                "Amount/PnL": item.get('amount', 0), # This captures realized profit/loss or fees
+                "Currency": item.get('currency', 'USDT'),
+                "Status": item.get('status', 'done')
             })
             
-        return pd.DataFrame(trade_list)
+        return pd.DataFrame(ledger_list), None
+        
     except Exception as e:
-        st.error(f"Error connecting to OKX: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), str(e)
 
 # 4. DASHBOARD UI
 st.title("📊 OKX Futures Trading Journal")
 st.markdown("Automated metrics fetched straight from your OKX API.")
 
-# Fetch data
-df = fetch_okx_futures_data()
+df, error_msg = fetch_okx_futures_data()
 
-if df.empty:
-    st.warning("No recent trade data fetched. Double-check your API keys or execute some trades on OKX!")
-else:
-    # --- METRICS SECTION ---
+if not df.empty:
     st.subheader("🏁 Performance Snapshot")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     
-    total_trades = len(df)
-    # Note: Real accurate PnL tracking generally requires fetching 'bills' from OKX, 
-    # but for this initial MVP dashboard, we will calculate total cost/volume.
-    total_volume = df['Cost'].sum()
-    total_fees = df['Fee'].sum()
+    total_records = len(df)
     
-    col1.metric("Total Executions", total_trades)
-    col2.metric("Total Traded Volume", f"${total_volume:,.2f}")
-    col3.metric("Total Paid Fees", f"${total_fees:,.2f}")
-    col4.metric("Active Sync", "Healthy 🟢")
+    # If we parsed a ledger, we can find total PnL changes
+    if "Amount/PnL" in df.columns:
+        # Filter out rows that represent changes in asset balances (Realized PnL or Fees)
+        net_change = df["Amount/PnL"].sum()
+        col1.metric("Net Change (PnL & Fees)", f"${net_change:,.4f}")
+    
+    col2.metric("Total Records Found", total_records)
+    col3.metric("Active Sync", "Healthy 🟢")
 
     st.markdown("---")
 
-    # --- CHARTS SECTION ---
-    st.subheader("📈 Analytics & Logs")
-    left_chart, right_chart = st.columns(2)
+    st.subheader("📈 History Log")
     
-    with left_chart:
-        st.write("**Traded Volume Distribution by Asset**")
-        fig_volume = px.bar(df, x="Symbol", y="Cost", color="Side", title="Volume per Symbol")
-        st.plotly_chart(fig_volume, use_container_width=True)
-        
-    with right_chart:
-        st.write("**Activity Timeline**")
-        fig_time = px.scatter(df, x="Date", y="Price", color="Symbol", size="Amount", title="Execution Prices Over Time")
-        st.plotly_chart(fig_time, use_container_width=True)
+    # Simple Chart
+    if "Amount/PnL" in df.columns:
+        fig_pnl = px.line(df.sort_values(by="Date"), x="Date", y="Amount/PnL", title="Account Balance Adjustments / PnL Over Time")
+        st.plotly_chart(fig_pnl, use_container_width=True)
 
+    st.subheader("📝 Detailed Ledger Table")
+    st.dataframe(df.sort_values(by="Date", ascending=False), use_container_width=True)
+    
     # --- DATA TABLE ---
     st.subheader("📝 Detailed Trade Ledger")
     st.dataframe(df.sort_values(by="Date", ascending=False), use_container_width=True)
