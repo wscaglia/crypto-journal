@@ -12,19 +12,20 @@ if not st.user.is_logged_in:
     st.title("🔒 AlphaQuant Workspace Secure Gate")
     st.markdown("This private server requires localized authentication.")
     
-    # Renders a sleek Google Auth Single Sign-On button
-    st.button("Log in with Google", on_click=st.login, icon="🔑")
+    # Passing "google" tells Streamlit to look directly at the [auth.google] configuration block
+    st.button("Log in with Google", on_click=st.login, args=["google"], icon="🔑")
     st.stop()
 
 # --- Authorization Access Check ---
-# To make sure NO ONE ELSE with a random Google account can view your data,
-# we verify that the logged-in email matches your specific personal email address!
-MY_ALLOWED_EMAIL = "your_actual_gmail_address@gmail.com" # 👈 Paste your exact Gmail here
+MY_ALLOWED_EMAIL = "your_actual_gmail_address@gmail.com" # 👈 Double check this matches your target login email
 
 if st.user.email != MY_ALLOWED_EMAIL:
     st.error("🚫 Access Denied: This Google account is not whitelisted for this system vault.")
     st.button("Log out & Switch Accounts", on_click=st.logout)
     st.stop()
+
+st.sidebar.markdown(f"**👤 Authenticated as:** \n`{st.user.email}`")
+st.sidebar.button("Secure Log Out", on_click=st.logout, type="primary")
 
 # Sidebar User interface element
 st.sidebar.markdown(f"**👤 Authenticated as:** \n`{st.user.email}`")
