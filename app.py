@@ -29,7 +29,8 @@ st.sidebar.button("Secure Log Out", on_click=st.logout, type="primary")
 
 # Sidebar User interface element
 st.sidebar.markdown(f"**👤 Authenticated as:** \n`{st.user.email}`")
-st.sidebar.button("Secure Log Out", on_click=st.logout, type="primary")
+st.sidebar.button("Secure Log Out", on_click=st.logout, type="primary", key="sidebar_logout")
+
 # 3. DATA ENGINE (REAL VS MOCK SIMULATION FOR PREVIEW)
 st.sidebar.title("⚙️ Control Panel")
 mode = st.sidebar.radio("Data Engine Mode", ["🔮 Preview Simulation Mode", "🔗 Live OKX + Supabase Sync"])
