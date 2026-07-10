@@ -7,25 +7,28 @@ import plotly.graph_objects as go
 # 1. PAGE SETUP
 st.set_page_config(page_title="AlphaQuant Trading Dashboard", page_icon="⚡", layout="wide")
 
-# 2. PASSWORD GATE
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.session_state.password_correct = False
-    if st.session_state.password_correct:
-        return True
-    st.title("🔒 Private Trading Journal")
-    password_input = st.text_input("Enter Access Password", type="password")
-    if st.button("Unlock Journal"):
-        if password_input == st.secrets.get("JOURNAL_PASSWORD", "vibe_coding_2026"):
-            st.session_state.password_correct = True
-            st.rerun()
-        else:
-            st.error("😕 Incorrect password.")
-    return False
-
-if not check_password():
+# 2. GOOGLE OAUTH SECURITY GATE
+if not st.user.is_logged_in:
+    st.title("🔒 AlphaQuant Workspace Secure Gate")
+    st.markdown("This private server requires localized authentication.")
+    
+    # Renders a sleek Google Auth Single Sign-On button
+    st.button("Log in with Google", on_click=st.login, icon="🔑")
     st.stop()
 
+# --- Authorization Access Check ---
+# To make sure NO ONE ELSE with a random Google account can view your data,
+# we verify that the logged-in email matches your specific personal email address!
+MY_ALLOWED_EMAIL = "your_actual_gmail_address@gmail.com" # 👈 Paste your exact Gmail here
+
+if st.user.email != MY_ALLOWED_EMAIL:
+    st.error("🚫 Access Denied: This Google account is not whitelisted for this system vault.")
+    st.button("Log out & Switch Accounts", on_click=st.logout)
+    st.stop()
+
+# Sidebar User interface element
+st.sidebar.markdown(f"**👤 Authenticated as:** \n`{st.user.email}`")
+st.sidebar.button("Secure Log Out", on_click=st.logout, type="primary")
 # 3. DATA ENGINE (REAL VS MOCK SIMULATION FOR PREVIEW)
 st.sidebar.title("⚙️ Control Panel")
 mode = st.sidebar.radio("Data Engine Mode", ["🔮 Preview Simulation Mode", "🔗 Live OKX + Supabase Sync"])
