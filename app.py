@@ -17,7 +17,7 @@ if not st.user.is_logged_in:
 
 # --- Authorization Access Check ---
 # 🚨 REPLACE WITH YOUR EXACT WHITE-LISTED GMAIL ADDRESS
-MY_ALLOWED_EMAIL = "your_actual_gmail_address@gmail.com" 
+MY_ALLOWED_EMAIL = "wscaglia@gmail.com" 
 
 if st.user.email != MY_ALLOWED_EMAIL:
     st.error("🚫 Access Denied: This Google account is not whitelisted for this system vault.")
