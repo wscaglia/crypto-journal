@@ -16,7 +16,7 @@ if not st.user.is_logged_in:
     st.stop()
 
 # --- Authorization Access Check ---
-MY_ALLOWED_EMAIL = "wscaglia@gmail.com" # 🚨 Ensure this matches your logged-in email!
+MY_ALLOWED_EMAIL = "wscaglia@gmail.com" 
 
 if st.user.email != MY_ALLOWED_EMAIL:
     st.error("🚫 Access Denied: This Google account is not whitelisted for this system vault.")
@@ -74,17 +74,26 @@ def get_mock_data():
 def fetch_live_account_and_sync():
     sync_status = "Sync Initiated"
     positions_df = pd.DataFrame()
+    balance_dict = {}
     
     try:
-        # Initialize CCXT underlying client router
+        # Initialize CCXT client router
         exchange = ccxt.myokx({
             'apiKey': st.secrets["OKX_API_KEY"],
             'secret': st.secrets["OKX_SECRET"],
             'password': st.secrets["OKX_PASSPHRASE"],
-            'options': {'defaultType': 'swap'} 
         })
         
-        # --- A. RETRIEVE LIVE FLOATING POSITIONS ON-THE-FLY ---
+        # --- A. TEST RUN: CAPTURE ACCOUNT TOTAL WALLET BALANCE ---
+        try:
+            bal_raw = exchange.fetch_balance()
+            if bal_raw and 'total' in bal_raw:
+                # Filter out empty assets, keep only tokens with actual balances
+                balance_dict = {ccy: amt for ccy, amt in bal_raw['total'].items() if amt > 0.0}
+        except Exception as bal_err:
+            st.sidebar.error(f"Balance check error: {bal_err}")
+
+        # --- B. RETRIEVE LIVE FLOATING POSITIONS ON-THE-FLY ---
         try:
             raw_positions = exchange.fetch_positions(symbols=None, params={})
             pos_list = []
@@ -105,13 +114,13 @@ def fetch_live_account_and_sync():
         except Exception as pos_err:
             st.warning(f"Could not load open positions from Live Account terminal: {pos_err}")
 
-        # --- B. DEEP-SWEEP CHRONOLOGICAL ORDER LEDGERS (TRADINGVIEW WEBHOOK FALLBACK) ---
+        # --- C. DEEP-SWEEP CHRONOLOGICAL ORDER LEDGERS (INCLUDING FUTURES FOR ONDO) ---
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
         consolidated_orders = []
         
-        # Scans both SWAP and MARGIN instrument types for filled orders
-        target_types = ['SWAP', 'MARGIN']
-        scanned_counts = {"SWAP": 0, "MARGIN": 0}
+        # 🚨 Added 'FUTURES' to target your ONDOUSD.UMM2031 delivery contract fills!
+        target_types = ['SWAP', 'MARGIN', 'FUTURES']
+        scanned_counts = {"SWAP": 0, "MARGIN": 0, "FUTURES": 0}
         
         for inst_type in target_types:
             try:
@@ -122,27 +131,21 @@ def fetch_live_account_and_sync():
                     params={'instType': inst_type}
                 )
                 if orders:
-                    # Filter out canceled or completely unfilled order iterations
                     filled_orders = [o for o in orders if o.get('status') == 'closed' or float(o.get('filled', 0)) > 0]
                     consolidated_orders.extend(filled_orders)
                     scanned_counts[inst_type] = len(filled_orders)
-            except Exception as order_err:
+            except Exception:
                 pass
         
         if consolidated_orders:
             new_records = 0
             for o in consolidated_orders:
                 order_id = str(o['id'])
-                
-                # Deduplication barrier check against Supabase
                 existing = supabase.table("advanced_journal").select("id").eq("id", order_id).execute()
                 
                 if len(existing.data) == 0:
-                    # Extract values or fallback safely
                     fee_cost = float(o.get('fee', {}).get('cost', 0)) if o.get('fee') else 0.0
                     raw_pnl = float(o.get('info', {}).get('pnl', 0.0))
-                    
-                    # If OKX order info structure doesn't output plain net PnL, build standard proxy logic
                     net_pnl_calc = raw_pnl if raw_pnl != 0.0 else float(fee_cost * -1)
                     
                     order_data = {
@@ -160,14 +163,14 @@ def fetch_live_account_and_sync():
                     }
                     supabase.table("advanced_journal").insert(order_data).execute()
                     new_records += 1
-            sync_status = f"Sync Completed! Found {scanned_counts['SWAP']} Swap & {scanned_counts['MARGIN']} Margin completed webhook orders. Added {new_records} new items."
+            sync_status = f"Sync Completed! Found Scanned: Swap={scanned_counts['SWAP']}, Margin={scanned_counts['MARGIN']}, Futures={scanned_counts['FUTURES']}. Added {new_records} new items."
         else:
-            sync_status = f"No recent closed orders found on your Live Account within 30 days (Scanned: Swap=0, Margin=0)."
+            sync_status = f"No closed orders found across categories (Scanned: Swap=0, Margin=0, Futures={scanned_counts['FUTURES']})."
             
     except Exception as e:
         sync_status = f"API Synchronization Bridge Warning: {str(e)}"
         
-    return sync_status, positions_df
+    return sync_status, positions_df, balance_dict
 
 def load_history_from_db():
     try:
@@ -190,10 +193,11 @@ if mode == "🔮 Preview Simulation Mode":
         "Contracts/Size": "1.50", "Entry Price": 64200.0, "Mark Price": 65150.0,
         "Unrealized PnL ($)": 1425.0, "Collateral Asset": "USDT"
     }])
+    live_balances = {"USDT": 10500.0, "USDC": 1250.0}
     sync_status = "Simulation Cache Verified"
     st.sidebar.success("Displaying analytical performance models!")
 else:
-    sync_status, open_positions_df = fetch_live_account_and_sync()
+    sync_status, open_positions_df, live_balances = fetch_live_account_and_sync()
     df = load_history_from_db()
 
 # 5. MATHEMATICS & METRICS COMPILER
@@ -235,10 +239,21 @@ if not df.empty:
 st.title("⚡ AlphaQuant Advanced Analytics Workspace")
 st.markdown("Deep-dive algorithmic performance telemetry and live margin risk mapping.")
 
+# --- 🧪 LIVE WALLET BALANCE DIAGNOSTIC CARD ---
+st.markdown("## 💰 Live Account Balances")
+if live_balances:
+    cols = st.columns(len(live_balances))
+    for idx, (asset, amount) in enumerate(live_balances.items()):
+        cols[idx].metric(f"Total Asset Balance ({asset})", f"{amount:,.4f}")
+else:
+    st.warning("⚠️ No asset wallet balances returned from the endpoint check. Verify account margin distribution layers.")
+
+st.markdown("---")
+
 # --- RISK NODE: LIVE OPEN POSITIONS ---
 st.markdown("## 🚨 Live Floating Margin Positions")
 if open_positions_df.empty:
-    st.info("🟢 No active positions are currently floating open on your Live Account perpetual swaps.")
+    st.info("🟢 No active positions are currently floating open on your Live Account perpetual or dated contracts.")
 else:
     total_float_pnl = open_positions_df["Unrealized PnL ($)"].sum()
     if total_float_pnl >= 0:
