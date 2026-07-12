@@ -84,16 +84,15 @@ def fetch_live_account_and_sync():
             'password': st.secrets["OKX_PASSPHRASE"],
         })
         
-        # --- A. TEST RUN: CAPTURE ACCOUNT TOTAL WALLET BALANCE ---
+        # --- A. WALLET BALANCE RETRIEVAL ---
         try:
             bal_raw = exchange.fetch_balance()
             if bal_raw and 'total' in bal_raw:
-                # Filter out empty assets, keep only tokens with actual balances
                 balance_dict = {ccy: amt for ccy, amt in bal_raw['total'].items() if amt > 0.0}
-        except Exception as bal_err:
-            st.sidebar.error(f"Balance check error: {bal_err}")
+        except:
+            pass
 
-        # --- B. RETRIEVE LIVE FLOATING POSITIONS ON-THE-FLY ---
+        # --- B. RETRIEVE LIVE FLOATING POSITIONS ---
         try:
             raw_positions = exchange.fetch_positions(symbols=None, params={})
             pos_list = []
@@ -111,30 +110,24 @@ def fetch_live_account_and_sync():
                     })
             if pos_list:
                 positions_df = pd.DataFrame(pos_list)
-        except Exception as pos_err:
-            st.warning(f"Could not load open positions from Live Account terminal: {pos_err}")
+        except:
+            pass
 
-        # --- C. DEEP-SWEEP CHRONOLOGICAL ORDER LEDGERS (INCLUDING FUTURES FOR ONDO) ---
+        # --- C. DEEP-SWEEP COMPLETED ORDERS (WEBHOOK ORDER ROUTER EXTRACTION) ---
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
         consolidated_orders = []
         
-        # 🚨 Added 'FUTURES' to target your ONDOUSD.UMM2031 delivery contract fills!
         target_types = ['SWAP', 'MARGIN', 'FUTURES']
         scanned_counts = {"SWAP": 0, "MARGIN": 0, "FUTURES": 0}
         
         for inst_type in target_types:
             try:
-                orders = exchange.fetch_closed_orders(
-                    symbol=None, 
-                    since=thirty_days_ago, 
-                    limit=100, 
-                    params={'instType': inst_type}
-                )
+                orders = exchange.fetch_closed_orders(symbol=None, since=thirty_days_ago, limit=100, params={'instType': inst_type})
                 if orders:
                     filled_orders = [o for o in orders if o.get('status') == 'closed' or float(o.get('filled', 0)) > 0]
                     consolidated_orders.extend(filled_orders)
                     scanned_counts[inst_type] = len(filled_orders)
-            except Exception:
+            except:
                 pass
         
         if consolidated_orders:
@@ -163,7 +156,7 @@ def fetch_live_account_and_sync():
                     }
                     supabase.table("advanced_journal").insert(order_data).execute()
                     new_records += 1
-            sync_status = f"Sync Completed! Found Scanned: Swap={scanned_counts['SWAP']}, Margin={scanned_counts['MARGIN']}, Futures={scanned_counts['FUTURES']}. Added {new_records} new items."
+            sync_status = f"Sync Completed! Found Scanned: Swap={scanned_counts['SWAP']}, Margin={scanned_counts['MARGIN']}, Futures={scanned_counts['FUTURES']}. Added {new_records} items."
         else:
             sync_status = f"No closed orders found across categories (Scanned: Swap=0, Margin=0, Futures={scanned_counts['FUTURES']})."
             
@@ -204,23 +197,42 @@ else:
 if not df.empty:
     df = df.sort_values(by="exit_date").reset_index(drop=True)
     
+    # Stratified Performance Segments
     wins = df[df['net_pnl'] > 0]
     losses = df[df['net_pnl'] <= 0]
     
     total_trades = len(df)
-    win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
+    win_count = len(wins)
+    loss_count = len(losses)
+    win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
     
-    total_gross_profits = wins['net_pnl'].sum()
-    total_gross_losses = abs(losses['net_pnl'].sum())
+    # Financial Sums
+    sum_rewards = wins['net_pnl'].sum()
+    sum_losses = losses['net_pnl'].sum() # Negative value representing absolute loss scale
+    
+    total_gross_profits = sum_rewards
+    total_gross_losses = abs(sum_losses)
     profit_factor = total_gross_profits / total_gross_losses if total_gross_losses > 0 else total_gross_profits
     
     avg_win = wins['net_pnl'].mean() if not wins.empty else 0
-    avg_loss = losses['net_pnl'].mean() if not losses.empty else 0
-    expected_value = ((win_rate / 100) * avg_win) + ((1 - (win_rate / 100)) * avg_loss)
+    avg_loss = abs(losses['net_pnl'].mean()) if not losses.empty else 1
     
+    # Average Risk:Reward Ratio (Calculated based on Average Reward Size vs Average Risk Size)
+    avg_risk_reward = avg_win / avg_loss if avg_loss > 0 else 0
+    
+    expected_value = ((win_rate / 100) * avg_win) + ((1 - (win_rate / 100)) * (avg_loss * -1))
+    
+    # Compute Durations
     df['holding_time_hours'] = (df['exit_date'] - df['entry_date']).dt.total_seconds() / 3600
     avg_holding_time = df['holding_time_hours'].mean()
     
+    # Long vs Short Directional Ratio Compilation
+    longs_count = len(df[df['side'] == 'LONG'])
+    shorts_count = len(df[df['side'] == 'SHORT'])
+    long_pct = (longs_count / total_trades) * 100 if total_trades > 0 else 0
+    short_pct = (shorts_count / total_trades) * 100 if total_trades > 0 else 0
+    
+    # Cumulative Curves
     df['cumulative_pnl'] = df['net_pnl'].cumsum()
     
     running_pf = []
@@ -231,15 +243,35 @@ if not df.empty:
         running_pf.append(w_sum / l_sum if l_sum > 0 else w_sum)
     df['running_profit_factor'] = running_pf
 
+    # Day-of-Week Distribution Layout Matrix
     df['day_of_week'] = df['exit_date'].dt.day_name()
-    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    pnl_by_day = df.groupby('day_of_week')['net_pnl'].sum().reindex(day_order).reset_index()
+    day_order = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    
+    # Compile metrics per day for the Trading Calendar table
+    calendar_metrics = []
+    for day in day_order:
+        day_df = df[df['day_of_week'] == day]
+        if not day_df.empty:
+            day_pnl = day_df['net_pnl'].sum()
+            day_volume = len(day_df)
+            day_wins = len(day_df[day_df['net_pnl'] > 0])
+            day_wr = (day_wins / day_volume) * 100
+        else:
+            day_pnl, day_volume, day_wr = 0.0, 0, 0.0
+            
+        calendar_metrics.append({
+            "Calendar Day": day,
+            "Total Closed Trades": day_volume,
+            "Win Rate (%)": f"{day_wr:.1f}%",
+            "Net Session Performance ($)": day_pnl
+        })
+    calendar_table_df = pd.DataFrame(calendar_metrics)
 
 # 6. APP RENDERING LAYOUT
 st.title("⚡ AlphaQuant Advanced Analytics Workspace")
 st.markdown("Deep-dive algorithmic performance telemetry and live margin risk mapping.")
 
-# --- 🧪 LIVE WALLET BALANCE DIAGNOSTIC CARD ---
+# --- LIVE WALLET BALANCE DIAGNOSTIC CARD ---
 st.markdown("## 💰 Live Account Balances")
 if live_balances:
     cols = st.columns(len(live_balances))
@@ -274,23 +306,33 @@ else:
     if mode == "🔗 Live Account Sync":
         st.toast(sync_status, icon="🔄")
 
-    # Core Metric Matrix Blocks
+    # PRIMARY PERFORMANCE MATRIX BLOCKS
+    st.markdown("### 📊 Primary Metric Matrix Blocks")
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Win Rate", f"{win_rate:.2f}%", help="Percentage of trades executed that closed net positive.")
-    m2.metric("Profit Factor", f"{profit_factor:.2f}x", help="Gross Profits divided by Gross Losses. A value above 1.0 indicates structural mathematical profit.")
-    m3.metric("Expected Value (EV)", f"${expected_value:.2f}", help="The quantitative value expectancy expected per individual execution assignment.")
-    m4.metric("Avg Holding Time", f"{avg_holding_time:.1f} Hours", help="The mean operational lifespan resting inside an active contract.")
+    m2.metric("Profit Factor", f"{profit_factor:.2f}x", help="Gross Profits divided by Gross Losses.")
+    m3.metric("Avg Risk:Reward Ratio", f"1 : {avg_risk_reward:.2f}", help="Average gross win payout size vs average gross loss sizing scale.")
+    m4.metric("Avg Holding Time", f"{avg_holding_time:.2f} Hours", help="The mean operational lifespan resting inside an active contract.")
     m5.metric("Net Vault PnL", f"${df['net_pnl'].sum():,.2f}")
+
+    # SECONDARY COMPILER MATRIX BLOCKS
+    st.markdown("### 📐 Distribution & Volume Stratification")
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Sum up of Rewards (Gross Profit)", f"+${sum_rewards:,.2f}")
+    s2.metric("Sum up of Losses (Gross Loss)", f"-${abs(sum_losses):,.2f}")
+    s3.metric("Winners vs Losses Count", f"{win_count} Wins / {loss_count} Losses", help="Total raw trade count broken into winners vs negative closures.")
+    s4.metric("Longs vs Shorts Ratio", f"{long_pct:.1f}% L / {short_pct:.1f}% S", help="Percentage balance layout between buy orders and short entries.")
 
     st.markdown("---")
 
-    # ROW 1 CHARTS: EQUITIES & STABILITY DECAY
+    # ROW 1 CHARTS: UPGRADED AREA GROWTH CURVES & STABILITY DECAY
     st.markdown("### 📈 Capital Growth Vectors")
     c1, c2 = st.columns(2)
     with c1:
         st.write("**The Account Equity Curve (Cumulative Net PnL)**")
-        fig_equity = px.line(df, x="exit_date", y="cumulative_pnl", title="Chronological Account Value Scaling ($)", markers=True)
-        fig_equity.update_traces(line_color="#00FFCC", line_width=2)
+        # 🚨 UPGRADED: Line chart replaced with a visual Area Chart filling the equity progression
+        fig_equity = px.area(df, x="exit_date", y="cumulative_pnl", title="Chronological Account Value Scaling ($)")
+        fig_equity.update_traces(line_color="#00FFCC", fillcolor="rgba(0, 255, 204, 0.15)", line_width=2)
         st.plotly_chart(fig_equity, use_container_width=True)
     with c2:
         st.write("**Running Profit Factor Trend**")
@@ -301,8 +343,8 @@ else:
 
     st.markdown("---")
 
-    # ROW 2 CHARTS: WIN RATES & EFFICIENCIES
-    st.markdown("### 📊 Behavioral & Asset Efficiency")
+    # ROW 2: ASSET MAP & TRADING CALENDAR LAYOUT MATRIX
+    st.markdown("### 📅 Temporal & Asset Matrix Mapping")
     c3, c4 = st.columns(2)
     with c3:
         st.write("**Win Rate Stratification by Contract Token**")
@@ -313,9 +355,13 @@ else:
         fig_sym_win.add_hline(y=50.0, line_dash="dot", line_color="white")
         st.plotly_chart(fig_sym_win, use_container_width=True)
     with c4:
-        st.write("**Profit Accumulation by Trading Day**")
-        fig_day = px.bar(pnl_by_day, x='day_of_week', y='net_pnl', title="Net Profit Distribution Across Calendar Week", color='net_pnl', color_continuous_scale='Viridis')
-        st.plotly_chart(fig_day, use_container_width=True)
+        st.write("**📅 Weekly Trading Calendar Performance Grid**")
+        # 🚨 INSTALLED: Real grid matrix table mapping session metrics out from Sunday through Saturday
+        st.dataframe(
+            calendar_table_df,
+            use_container_width=True,
+            hide_index=True
+        )
 
     st.markdown("---")
 
@@ -331,11 +377,11 @@ else:
             sub_l = sub[sub['net_pnl'] <= 0]
             w_r = len(sub_w) / len(sub)
             a_w = sub_w['net_pnl'].mean() if not sub_w.empty else 0
-            a_l = sub_l['net_pnl'].mean() if not sub_l.empty else 0
-            running_ev.append((w_r * a_w) + ((1 - w_r) * a_l))
+            a_l = abs(sub_l['net_pnl'].mean()) if not sub_l.empty else 0
+            running_ev.append((w_r * a_w) + ((1 - w_r) * (a_l * -1)))
         
         fig_ev = px.area(x=df['exit_date'].iloc[1:], y=running_ev, title="Edge Stability Trend ($ Value Expectancy per Execution)")
-        fig_ev.update_traces(line_color="#A100FF")
+        fig_ev.update_traces(line_color="#A100FF", fillcolor="rgba(161, 0, 255, 0.15)")
         st.plotly_chart(fig_ev, use_container_width=True)
     with c6:
         st.write("**Position Hold Duration Spectrum**")
