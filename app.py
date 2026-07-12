@@ -8,7 +8,7 @@ from supabase import create_client, Client
 # 1. PAGE SETUP
 st.set_page_config(page_title="AlphaQuant Trading Dashboard", page_icon="⚡", layout="wide")
 
-# 2. GOOGLE OAUTH SECURITY GATE
+# 2. SECURITY SINGLE SIGN-ON GATE
 if not st.user.is_logged_in:
     st.title("🔒 AlphaQuant Workspace Secure Gate")
     st.markdown("This private server requires localized authentication.")
@@ -16,8 +16,8 @@ if not st.user.is_logged_in:
     st.stop()
 
 # --- Authorization Access Check ---
-# 🚨 REPLACE WITH YOUR EXACT WHITE-LISTED GMAIL ADDRESS
-MY_ALLOWED_EMAIL = "wscaglia@gmail.com" 
+# 🚨 ENSURE THIS MATCHES YOUR EXACT WHITE-LISTED GMAIL ADDRESS
+MY_ALLOWED_EMAIL = "your_actual_gmail_address@gmail.com" 
 
 if st.user.email != MY_ALLOWED_EMAIL:
     st.error("🚫 Access Denied: This Google account is not whitelisted for this system vault.")
@@ -36,7 +36,8 @@ supabase = get_supabase_client()
 
 # 4. DATA ENGINE (REAL EXCHANGE CONNECTOR & SYNC VS PREVIEW SIMULATION)
 st.sidebar.title("⚙️ Control Panel")
-mode = st.sidebar.radio("Data Engine Mode", ["🔮 Preview Simulation Mode", "🔗 Live Account + Supabase Sync"])
+# Reordered: Live Account now comes first as default selection
+mode = st.sidebar.radio("Data Engine Mode", ["🔗 Live Account Sync", "🔮 Preview Simulation Mode"])
 
 def get_mock_data():
     """Generates 40 realistic closed trades across BTC/ETH contracts for preview modeling."""
@@ -72,17 +73,17 @@ def get_mock_data():
     df['exit_date'] = pd.to_datetime(df['exit_date'])
     return df
 
-def fetch_live_okx_and_sync():
+def fetch_live_account_and_sync():
     sync_status = "Sync Initiated"
     positions_df = pd.DataFrame()
     
     try:
-        # Initialize CCXT European OKX subclass router
+        # Initialize CCXT underlying router
         exchange = ccxt.myokx({
             'apiKey': st.secrets["OKX_API_KEY"],
             'secret': st.secrets["OKX_SECRET"],
             'password': st.secrets["OKX_PASSPHRASE"],
-            'options': {'defaultType': 'swap'} # Focus directly on Perpetual Swaps (.UM)
+            'options': {'defaultType': 'swap'} 
         })
         
         # --- A. RETRIEVE LIVE FLOATING POSITIONS ON-THE-FLY ---
@@ -104,24 +105,41 @@ def fetch_live_okx_and_sync():
             if pos_list:
                 positions_df = pd.DataFrame(pos_list)
         except Exception as pos_err:
-            st.warning(f"Could not load open positions from OKX: {pos_err}")
+            st.warning(f"Could not load open positions from Live Account terminal: {pos_err}")
 
-        # --- B. SWEEP & SYNC COMPLETED SWAP TRADES TO DATABASE ---
+        # --- B. SWEEP & SYNC COMPLETED USD-MARGINED TRADES TO DATABASE ---
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
         
-        # Pulling SWAP instruments to map your .UM trades properly
-        trades = exchange.fetch_my_trades(symbol=None, since=thirty_days_ago, limit=100, params={'instType': 'SWAP'})
+        # Pulling BOTH 'SWAP' (Perpetuals) and 'MARGIN' (Spot Margin) 
+        # to guarantee we catch TradingView execution paths seamlessly.
+        target_instrument_types = ['SWAP', 'MARGIN']
+        all_fetched_trades = []
         
-        if trades:
+        for inst_type in target_instrument_types:
+            try:
+                chunk = exchange.fetch_my_trades(
+                    symbol=None, 
+                    since=thirty_days_ago, 
+                    limit=100, 
+                    params={'instType': inst_type}
+                )
+                if chunk:
+                    all_fetched_trades.extend(chunk)
+            except Exception as e:
+                pass
+        
+        if all_fetched_trades:
             new_records = 0
-            for t in trades:
+            for t in all_fetched_trades:
                 trade_id = str(t['id'])
-                # Deduplication barrier check
+                
+                # Deduplication barrier check against Supabase warehouse
                 existing = supabase.table("advanced_journal").select("id").eq("id", trade_id).execute()
                 
                 if len(existing.data) == 0:
                     cost = t.get('cost', 0) if t.get('cost', 0) > 0 else (t['price'] * t['amount'])
-                    # For basic execution receipts, we assume entry tracking metadata mapping
+                    fee_cost = float(t.get('fee', {}).get('cost', 0))
+                    
                     trade_data = {
                         "id": trade_id,
                         "symbol": t['symbol'],
@@ -131,15 +149,15 @@ def fetch_live_okx_and_sync():
                         "avg_entry_price": float(t['price']),
                         "avg_exit_price": float(t['price']),
                         "amount": float(t['amount']),
-                        "gross_pnl": float(t.get('fee', {}).get('cost', 0) * -1), # Fallback representation
-                        "fees": float(t.get('fee', {}).get('cost', 0)),
-                        "net_pnl": float(t.get('fee', {}).get('cost', 0) * -1)
+                        "gross_pnl": float(fee_cost * -1), 
+                        "fees": fee_cost,
+                        "net_pnl": float(fee_cost * -1)
                     }
                     supabase.table("advanced_journal").insert(trade_data).execute()
                     new_records += 1
-            sync_status = f"Sync Completed! Tracked and added {new_records} entries to database."
+            sync_status = f"Sync Completed! Found {len(all_fetched_trades)} total executions. Added {new_records} new entries to database."
         else:
-            sync_status = "No recent swap executions found on your live account within 30 days."
+            sync_status = "No recent swap or margin executions detected on your Live Account within 30 days."
             
     except Exception as e:
         sync_status = f"API Synchronization Bridge Warning: {str(e)}"
@@ -156,7 +174,7 @@ def load_history_from_db():
             return df_db
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error accessing Supabase warehouse: {e}")
+        st.error(f"Error accessing database warehouse: {e}")
         return pd.DataFrame()
 
 # EXECUTE DATA PROCESSING PIPELINE
@@ -170,14 +188,13 @@ if mode == "🔮 Preview Simulation Mode":
     sync_status = "Simulation Cache Verified"
     st.sidebar.success("Displaying analytical performance models!")
 else:
-    sync_status, open_positions_df = fetch_live_okx_and_sync()
+    sync_status, open_positions_df = fetch_live_account_and_sync()
     df = load_history_from_db()
 
 # 5. MATHEMATICS & METRICS COMPILER
 if not df.empty:
     df = df.sort_values(by="exit_date").reset_index(drop=True)
     
-    # Stratified Outcomes
     wins = df[df['net_pnl'] > 0]
     losses = df[df['net_pnl'] <= 0]
     
@@ -192,11 +209,9 @@ if not df.empty:
     avg_loss = losses['net_pnl'].mean() if not losses.empty else 0
     expected_value = ((win_rate / 100) * avg_win) + ((1 - (win_rate / 100)) * avg_loss)
     
-    # Compute Durations
     df['holding_time_hours'] = (df['exit_date'] - df['entry_date']).dt.total_seconds() / 3600
     avg_holding_time = df['holding_time_hours'].mean()
     
-    # Cumulative & Mathematical Progress Trends
     df['cumulative_pnl'] = df['net_pnl'].cumsum()
     
     running_pf = []
@@ -207,7 +222,6 @@ if not df.empty:
         running_pf.append(w_sum / l_sum if l_sum > 0 else w_sum)
     df['running_profit_factor'] = running_pf
 
-    # Weekday Modeling
     df['day_of_week'] = df['exit_date'].dt.day_name()
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
     pnl_by_day = df.groupby('day_of_week')['net_pnl'].sum().reindex(day_order).reset_index()
@@ -219,7 +233,7 @@ st.markdown("Deep-dive algorithmic performance telemetry and live margin risk ma
 # --- RISK NODE: LIVE OPEN POSITIONS ---
 st.markdown("## 🚨 Live Floating Margin Positions")
 if open_positions_df.empty:
-    st.info("🟢 No active positions are currently floating open on your OKX perpetual swaps.")
+    st.info("🟢 No active positions are currently floating open on your Live Account perpetual swaps.")
 else:
     total_float_pnl = open_positions_df["Unrealized PnL ($)"].sum()
     if total_float_pnl >= 0:
@@ -237,14 +251,14 @@ if df.empty:
     st.info("Your permanent historical database vault table is currently empty.")
     st.warning(f"Sync Gateway Log: {sync_status}")
 else:
-    if mode == "🔗 Live Account + Supabase Sync":
+    if mode == "🔗 Live Account Sync":
         st.toast(sync_status, icon="🔄")
 
     # Core Metric Matrix Blocks
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Win Rate", f"{win_rate:.2f}%", help="Percentage of trades executed that closed net positive.")
     m2.metric("Profit Factor", f"{profit_factor:.2f}x", help="Gross Profits divided by Gross Losses. A value above 1.0 indicates structural mathematical profit.")
-    m3.metric("Expected Value (EV)", f"${expected_value:.2f}", help="The quantitative value expectation expected per individual execution assignment.")
+    m3.metric("Expected Value (EV)", f"${expected_value:.2f}", help="The quantitative value expectancy expected per individual execution assignment.")
     m4.metric("Avg Holding Time", f"{avg_holding_time:.1f} Hours", help="The mean operational lifespan resting inside an active contract.")
     m5.metric("Net Vault PnL", f"${df['net_pnl'].sum():,.2f}")
 
