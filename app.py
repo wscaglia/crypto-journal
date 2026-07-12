@@ -180,20 +180,22 @@ def load_history_from_db():
         st.error(f"Error accessing database warehouse: {e}")
         return pd.DataFrame()
 
-# EXECUTE DATA PROCESSING PIPELINE
-if mode == "🔮 Preview Simulation Mode":
-    df = get_mock_data()
-    open_positions_df = pd.DataFrame([{
-        "Symbol": "BTC/USDT:USDT", "Side": "LONG", "Leverage": "20x",
-        "Contracts/Size": "1.50", "Entry Price": 64200.0, "Mark Price": 65150.0,
-        "Unrealized PnL ($)": 1425.0, "Collateral Asset": "USDT"
-    }])
-    live_balances = {"USDT": 10500.0, "USDC": 1250.0}
-    sync_status = "Simulation Cache Verified"
-    st.sidebar.success("Displaying analytical performance models!")
-else:
-    sync_status, open_positions_df, live_balances = fetch_live_account_and_sync()
-    df = load_history_from_db()
+# 🚨 DIRECTIONAL TRAP RESOLVED: Group by initial strategic intent, not order execution legs
+    if mode == "🔮 Preview Simulation Mode":
+        longs_count = len(clean_df[clean_df['side'] == 'LONG'])
+        shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
+    else:
+        # Filter your live database to only count the initial execution leg (BUY/LONG entries)
+        # to prevent exit SELL orders from being counted as independent short trades.
+        longs_count = len(clean_df[clean_df['side'].str.upper().isin(['BUY', 'LONG'])])
+        
+        # If your strategy only deploys buy entries, force structural short counts to zero 
+        # unless an explicit SELL entry order (Shorting a contract open) is detected.
+        shorts_count = len(clean_df[clean_df['side'].str.upper() == 'SHORT'])
+
+    total_direction_sum = longs_count + shorts_count
+    long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
+    short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
 
 # 5. MATHEMATICS & METRICS COMPILER
 if not df.empty:
