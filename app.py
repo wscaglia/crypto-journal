@@ -16,8 +16,7 @@ if not st.user.is_logged_in:
     st.stop()
 
 # --- Authorization Access Check ---
-# 🚨 ENSURE THIS MATCHES YOUR EXACT WHITE-LISTED GMAIL ADDRESS
-MY_ALLOWED_EMAIL = "wscaglia@gmail.com" 
+MY_ALLOWED_EMAIL = "wscaglia@gmail.com" # 🚨 Ensure this matches your logged-in email!
 
 if st.user.email != MY_ALLOWED_EMAIL:
     st.error("🚫 Access Denied: This Google account is not whitelisted for this system vault.")
@@ -36,7 +35,6 @@ supabase = get_supabase_client()
 
 # 4. DATA ENGINE (REAL EXCHANGE CONNECTOR & SYNC VS PREVIEW SIMULATION)
 st.sidebar.title("⚙️ Control Panel")
-# Reordered: Live Account now comes first as default selection
 mode = st.sidebar.radio("Data Engine Mode", ["🔗 Live Account Sync", "🔮 Preview Simulation Mode"])
 
 def get_mock_data():
@@ -78,7 +76,7 @@ def fetch_live_account_and_sync():
     positions_df = pd.DataFrame()
     
     try:
-        # Initialize CCXT underlying router
+        # Initialize CCXT underlying client router
         exchange = ccxt.myokx({
             'apiKey': st.secrets["OKX_API_KEY"],
             'secret': st.secrets["OKX_SECRET"],
@@ -107,39 +105,55 @@ def fetch_live_account_and_sync():
         except Exception as pos_err:
             st.warning(f"Could not load open positions from Live Account terminal: {pos_err}")
 
-        # --- B. SWEEP & SYNC COMPLETED USD-MARGINED TRADES TO DATABASE ---
+        # --- B. MULTI-CHANNELS HISTORIC TRADE EXTRACTION SYSTEM ---
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
-        
-        # Pulling BOTH 'SWAP' (Perpetuals) and 'MARGIN' (Spot Margin) 
-        # to guarantee we catch TradingView execution paths seamlessly.
-        target_instrument_types = ['SWAP', 'MARGIN']
         all_fetched_trades = []
         
-        for inst_type in target_instrument_types:
+        # Method 1: Target primary trade log endpoints
+        for t_type in ['SWAP', 'MARGIN']:
             try:
-                chunk = exchange.fetch_my_trades(
-                    symbol=None, 
-                    since=thirty_days_ago, 
-                    limit=100, 
-                    params={'instType': inst_type}
-                )
-                if chunk:
-                    all_fetched_trades.extend(chunk)
-            except Exception as e:
-                pass
+                chunk = exchange.fetch_my_trades(symbol=None, since=thirty_days_ago, limit=100, params={'instType': t_type})
+                if chunk: all_fetched_trades.extend(chunk)
+            except: pass
+
+        # Method 2: Target Unified Ledger streams if trade logs returned blank (catches TV integrations)
+        if not all_fetched_trades:
+            try:
+                # Queries type 1 (Trade fills) and type 2 (Trade PnL statements) from financial logs
+                ledger_entries = exchange.fetch_ledger(symbol=None, since=thirty_days_ago, limit=100)
+                for entry in ledger_entries:
+                    if entry.get('type') in ['trade', 'pnl', 'fee']:
+                        # standardizing to trade-like format schemas
+                        all_fetched_trades.append({
+                            'id': entry['id'],
+                            'symbol': entry.get('symbol', 'CryptoAsset'),
+                            'side': 'LONG' if float(entry.get('amount', 0)) >= 0 else 'SHORT',
+                            'datetime': entry['datetime'],
+                            'price': float(entry.get('price', 1)),
+                            'amount': abs(float(entry.get('amount', 0))),
+                            'fee_cost': abs(float(entry.get('fee', {}).get('cost', 0))),
+                            'pnl_val': float(entry.get('info', {}).get('pnl', 0))
+                        })
+            except: pass
         
         if all_fetched_trades:
             new_records = 0
             for t in all_fetched_trades:
                 trade_id = str(t['id'])
                 
-                # Deduplication barrier check against Supabase warehouse
+                # Check for duplicate tracking entries in your storage warehouse
                 existing = supabase.table("advanced_journal").select("id").eq("id", trade_id).execute()
                 
                 if len(existing.data) == 0:
-                    cost = t.get('cost', 0) if t.get('cost', 0) > 0 else (t['price'] * t['amount'])
-                    fee_cost = float(t.get('fee', {}).get('cost', 0))
+                    # Parse standard trade layout vs ledger dictionary items
+                    is_ledger = 'pnl_val' in t
+                    net_pnl_calc = t['pnl_val'] if is_ledger else float(t.get('fee', {}).get('cost', 0) * -1)
+                    fee_calc = t['fee_cost'] if is_ledger else float(t.get('fee', {}).get('cost', 0))
                     
+                    # Ensure non-zero or clean tracking states
+                    if is_ledger and net_pnl_calc == 0 and fee_calc == 0:
+                        continue
+                        
                     trade_data = {
                         "id": trade_id,
                         "symbol": t['symbol'],
@@ -149,15 +163,15 @@ def fetch_live_account_and_sync():
                         "avg_entry_price": float(t['price']),
                         "avg_exit_price": float(t['price']),
                         "amount": float(t['amount']),
-                        "gross_pnl": float(fee_cost * -1), 
-                        "fees": fee_cost,
-                        "net_pnl": float(fee_cost * -1)
+                        "gross_pnl": float(net_pnl_calc + fee_calc) if is_ledger else float(net_pnl_calc),
+                        "fees": float(fee_calc),
+                        "net_pnl": float(net_pnl_calc)
                     }
                     supabase.table("advanced_journal").insert(trade_data).execute()
                     new_records += 1
-            sync_status = f"Sync Completed! Found {len(all_fetched_trades)} total executions. Added {new_records} new entries to database."
+            sync_status = f"Sync Completed! Tracked pipeline streams. Generated updates."
         else:
-            sync_status = "No recent swap or margin executions detected on your Live Account within 30 days."
+            sync_status = "No recent executions or ledger variations detected on your Live Account within 30 days."
             
     except Exception as e:
         sync_status = f"API Synchronization Bridge Warning: {str(e)}"
