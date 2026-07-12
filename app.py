@@ -68,10 +68,10 @@ def get_mock_data():
             "fees": fees,
             "net_pnl": net_pnl
         })
-    df = pd.DataFrame(mock_list)
-    df['entry_date'] = pd.to_datetime(df['entry_date'])
-    df['exit_date'] = pd.to_datetime(df['exit_date'])
-    return df
+    df_mock = pd.DataFrame(mock_list)
+    df_mock['entry_date'] = pd.to_datetime(df_mock['entry_date'])
+    df_mock['exit_date'] = pd.to_datetime(df_mock['exit_date'])
+    return df_mock
 
 def fetch_live_account_and_sync():
     sync_status = "Sync Initiated"
@@ -180,23 +180,21 @@ def load_history_from_db():
         st.error(f"Error accessing database warehouse: {e}")
         return pd.DataFrame()
 
-# DIRECTIONAL TRAP RESOLVED: Group by initial strategic intent, not order execution legs
-    if mode == "🔮 Preview Simulation Mode":
-        longs_count = len(clean_df[clean_df['side'] == 'LONG'])
-        shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
-    else:
-        # Filter your live database to only count the initial execution leg (BUY/LONG entries)
-        # to prevent exit SELL orders from being counted as independent short trades.
-        longs_count = len(clean_df[clean_df['side'].str.upper().isin(['BUY', 'LONG'])])
-        
-        # If your strategy only deploys buy entries, force structural short counts to zero 
-        # unless an explicit SELL entry order (Shorting a contract open) is detected.
-        shorts_count = len(clean_df[clean_df['side'].str.upper() == 'SHORT'])
+# EXECUTE DATA PROCESSING PIPELINE
+if mode == "🔮 Preview Simulation Mode":
+    df = get_mock_data()
+    open_positions_df = pd.DataFrame([{
+        "Symbol": "BTC/USDT:USDT", "Side": "LONG", "Leverage": "20x",
+        "Contracts/Size": "1.50", "Entry Price": 64200.0, "Mark Price": 65150.0,
+        "Unrealized PnL ($)": 1425.0, "Collateral Asset": "USDT"
+    }])
+    live_balances = {"USDT": 10500.0, "USDC": 1250.0}
+    sync_status = "Simulation Cache Verified"
+    st.sidebar.success("Displaying analytical performance models!")
+else:
+    sync_status, open_positions_df, live_balances = fetch_live_account_and_sync()
+    df = load_history_from_db()
 
-    total_direction_sum = longs_count + shorts_count
-    long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
-    short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
-    
 # 5. MATHEMATICS & METRICS COMPILER
 if not df.empty:
     df = df.sort_values(by="exit_date").reset_index(drop=True)
@@ -233,26 +231,14 @@ if not df.empty:
     clean_df['holding_time_hours'] = (clean_df['exit_date'] - clean_df['entry_date']).dt.total_seconds() / 3600
     avg_holding_time = clean_df['holding_time_hours'].mean()
     
-    # 🚨 DIRECTIONAL TRAP RESOLVED: Determine trade type based on execution profiles
-    # Instead of counting exit "SELL" slips as short trades, we check what actions generate real PnL variations.
-    # For a Long trader, winning days match up with exit SELL cycles, but their true operational design is LONG.
+    # DIRECTIONAL INTENT LOGIC
     if mode == "🔮 Preview Simulation Mode":
-        # Sim mode retains standard clean balance states
         longs_count = len(clean_df[clean_df['side'] == 'LONG'])
         shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
     else:
-        # On your live account, since you are trading long contract entries via webhooks:
-        # If your actual filled records show up as BUY/SELL executions, we verify the underlying instrument state.
-        buy_entries_count = len(clean_df[clean_df['side'].str.upper().isin(['BUY', 'LONG'])])
-        sell_exits_count = len(clean_df[clean_df['side'].str.upper().isin(['SELL', 'SHORT'])])
-        
-        # If your database logs entry and exit legs evenly for your Long strategy, we map the balance accurately:
-        if buy_entries_count > 0 and sell_exits_count > 0:
-            longs_count = buy_entries_count  # Every buy was your target structural long position position entry
-            shorts_count = 0                 # No native short strategy targets executed yet
-        else:
-            longs_count = buy_entries_count
-            shorts_count = sell_exits_count
+        # Filter down specifically to BUY order triggers to drop the secondary sell exits
+        longs_count = len(clean_df[clean_df['side'].str.upper().isin(['BUY', 'LONG'])])
+        shorts_count = len(clean_df[clean_df['side'].str.upper() == 'SHORT'])
 
     total_direction_sum = longs_count + shorts_count
     long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
@@ -320,7 +306,7 @@ else:
     # PRIMARY PERFORMANCE MATRIX BLOCKS
     st.markdown("### 📊 Primary Performance Metrics")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Win Rate (Filtered)", f"{win_rate:.2f}%", help="Percentage of strategic trades executed that closed net positive (excluding fee artifacts).")
+    m1.metric("Win Rate (Filtered)", f"{win_rate:.2f}%", help="Percentage of strategic trades executed that closed net positive.")
     m2.metric("Profit Factor", f"{profit_factor:.2f}x", help="Gross Profits divided by Gross Losses.")
     m3.metric("Avg Risk:Reward Ratio", f"1 : {avg_risk_reward:.2f}", help="Average gross win payout size vs average gross loss sizing scale.")
     m4.metric("Avg Holding Time", f"{avg_holding_time:.2f} Hours", help="The mean operational lifespan resting inside an active contract.")
@@ -332,12 +318,12 @@ else:
     s1.metric("Sum up of Rewards (Gross Profit)", f"+${sum_rewards:,.2f}")
     s2.metric("Sum up of Losses (Gross Loss)", f"-${abs(sum_losses):,.2f}")
     s3.metric("Sum up of Trading Fees", f"${sum_total_fees:,.4f}", help="Aggregate accumulation of all commissions paid across all execution paths.")
-    s4.metric("Winners vs Losses Count", f"{win_count} W / {loss_count} L", help="Total raw trade count broken into winners vs negative closures (excluding fee noise).")
+    s4.metric("Winners vs Losses Count", f"{win_count} W / {loss_count} L", help="Total raw trade count broken into winners vs negative closures.")
     s5.metric("Longs vs Shorts Ratio", f"{long_pct:.1f}% L / {short_pct:.1f}% S")
 
     st.markdown("---")
 
-    # ROW 1 CHARTS: UPGRADED AREA GROWTH CURVES & STABILITY DECAY
+    # ROW 1 CHARTS: AREA GROWTH CURVES & STABILITY DECAY
     st.markdown("### 📈 Capital Growth Vectors")
     c1, c2 = st.columns(2)
     with c1:
@@ -354,7 +340,7 @@ else:
 
     st.markdown("---")
 
-    # ROW 2: ASSET MAP & NEW CUSTOM GRID CALENDAR VISUALIZATION
+    # ROW 2: ASSET MAP & CUSTOM GRID CALENDAR VISUALIZATION
     st.markdown("### 📅 Temporal & Asset Matrix Mapping")
     c3, c4 = st.columns(2)
     with c3:
@@ -387,7 +373,6 @@ else:
                 else:
                     day_pnl = daily_pnl_map.get(day_num, 0.0)
                     
-                    # 🚨 UPGRADE: Text color updated to high-contrast deep black (#111111) for maximum clarity inside color boxes
                     if day_pnl > 0.001:
                         bg_style = "background-color: rgba(0, 255, 204, 0.85); border: 1px solid #00FFCC;"
                         text_color = "color: #111111;"
