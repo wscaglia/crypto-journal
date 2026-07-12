@@ -227,31 +227,23 @@ if not df.empty:
     avg_loss = abs(losses['net_pnl'].mean()) if not losses.empty else 1
     avg_risk_reward = avg_win / avg_loss if avg_loss > 0 else 0
     
-    # 🚨 DURATIONlifespan ENGINE FIX: Group isolated execution entries into true position cycles
-    # Calculates holding metrics by measuring the distance between earliest entry and final exit per asset contract.
+    # DURATION ENGINES LIFESPAN PARSER
     try:
         grouped_durations = []
         for symbol, group in clean_df.groupby('symbol'):
             if len(group) >= 2:
                 sorted_group = group.sort_values(by='exit_date')
-                # Pinpoint the start timestamp and end timestamp of the total asset position cycle
                 first_entry = sorted_group['exit_date'].min()
                 last_exit = sorted_group['exit_date'].max()
-                
                 duration_hours = (last_exit - first_entry).total_seconds() / 3600
-                if duration_hours > 0.01: # Drop instant multi-fills on the same second
+                if duration_hours > 0.01:
                     grouped_durations.append(duration_hours)
-        
-        # Fallback to exchange baseline matching averages if history cycle blocks are still processing
         if grouped_durations:
             avg_holding_time = np.mean(grouped_durations)
         else:
-            # 💡 Hardcoded backup fallback using your actual live account stats (1d 1h)
-            # while the database historical log aggregates more cycle depth rows!
             avg_holding_time = 25.0  
     except:
-        avg_holding_time = 25.0 # Institutional default fallback (25 hours = 1 day, 1 hour)
-
+        avg_holding_time = 25.0
     clean_df['holding_time_hours'] = avg_holding_time
     
     # DIRECTIONAL INTENT LOGIC
@@ -259,7 +251,6 @@ if not df.empty:
         longs_count = len(clean_df[clean_df['side'] == 'LONG'])
         shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
     else:
-        # Filter down specifically to BUY order triggers to drop the secondary sell exits
         longs_count = len(clean_df[clean_df['side'].str.upper().isin(['BUY', 'LONG'])])
         shorts_count = len(clean_df[clean_df['side'].str.upper() == 'SHORT'])
 
@@ -291,40 +282,29 @@ if not df.empty:
 st.title("⚡ AlphaQuant Advanced Analytics Workspace")
 st.markdown("Deep-dive algorithmic performance telemetry and live margin risk mapping.")
 
-# --- LIVE WALLET BALANCE DIAGNOSTIC CARD ---
 # --- 💰 LIVE WALLET BALANCE & PERFORMANCE GAIN ENGINE ---
 st.markdown("## 💰 Live Account Balances & Performance ROI")
-
-# 🚨 INITIAL SEED FUND CONFIGURATION
-# Adjust this value to your exact starting capital deposit amount!
-INITIAL_ACCOUNT_SEED = 278.32  
+INITIAL_ACCOUNT_SEED = 10000.00  
 
 if live_balances:
-    # Build columns to show total tokens + total account equity performance metrics
     total_assets_count = len(live_balances)
     cols = st.columns(total_assets_count + 1)
     
-    # Isolate principal asset class (USDT/USDC stable base) for ROI calculations
     primary_stable_balance = live_balances.get("USDT", live_balances.get("USDC", 0.0))
-    
-    # Compute percentage return vectors
     net_roi_percent = ((primary_stable_balance - INITIAL_ACCOUNT_SEED) / INITIAL_ACCOUNT_SEED) * 100
     
-    # 1. Render raw token asset balances across columns
     for idx, (asset, amount) in enumerate(live_balances.items()):
         cols[idx].metric(f"Total Balance ({asset})", f"${amount:,.2f}")
         
-    # 2. Render localized operational ROI performance tracker card in the final column
     cols[total_assets_count].metric(
-        label=f"Account Return on Investment (ROI)",
+        label="Account Return on Investment (ROI)",
         value=f"{net_roi_percent:+.2f}%",
         delta=f"${(primary_stable_balance - INITIAL_ACCOUNT_SEED):+,.2f} Total Drift",
-        help=f"Calculated performance yield derived from your configured initial seed baseline of ${INITIAL_ACCOUNT_SEED:,.2f}"
+        help=f"Calculated yield derived from your seed baseline of ${INITIAL_ACCOUNT_SEED:,.2f}"
     )
 else:
-    st.warning("⚠️ No asset wallet balances returned from the endpoint check. Verify account margin distribution layers.")
-else:
-    st.warning("⚠️ No asset wallet balances returned from the endpoint check. Verify account margin distribution layers.")
+    st.warning("⚠️ No asset wallet balances returned from the endpoint check.")
+
 st.markdown("---")
 
 # --- RISK NODE: LIVE OPEN POSITIONS ---
@@ -403,13 +383,11 @@ else:
     with c4:
         st.write(f"**📅 Trading Performance Calendar Grid ({month_name} {target_year})**")
         
-        # Rendering Calendar Week Header Rows
         headers = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
         grid_cols = st.columns(7)
         for idx, day_head in enumerate(headers):
             grid_cols[idx].markdown(f"<p style='text-align:center; font-weight:bold; margin-bottom:2px;'>{day_head}</p>", unsafe_allow_html=True)
             
-        # Rendering Week Rows containing Day Cards
         for week in month_calendar:
             week_cols = st.columns(7)
             for day_idx, day_num in enumerate(week):
