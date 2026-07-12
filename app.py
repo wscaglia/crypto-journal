@@ -292,11 +292,37 @@ st.title("⚡ AlphaQuant Advanced Analytics Workspace")
 st.markdown("Deep-dive algorithmic performance telemetry and live margin risk mapping.")
 
 # --- LIVE WALLET BALANCE DIAGNOSTIC CARD ---
-st.markdown("## 💰 Live Account Balances")
+# --- 💰 LIVE WALLET BALANCE & PERFORMANCE GAIN ENGINE ---
+st.markdown("## 💰 Live Account Balances & Performance ROI")
+
+# 🚨 INITIAL SEED FUND CONFIGURATION
+# Adjust this value to your exact starting capital deposit amount!
+INITIAL_ACCOUNT_SEED = 278.32  
+
 if live_balances:
-    cols = st.columns(len(live_balances))
+    # Build columns to show total tokens + total account equity performance metrics
+    total_assets_count = len(live_balances)
+    cols = st.columns(total_assets_count + 1)
+    
+    # Isolate principal asset class (USDT/USDC stable base) for ROI calculations
+    primary_stable_balance = live_balances.get("USDT", live_balances.get("USDC", 0.0))
+    
+    # Compute percentage return vectors
+    net_roi_percent = ((primary_stable_balance - INITIAL_ACCOUNT_SEED) / INITIAL_ACCOUNT_SEED) * 100
+    
+    # 1. Render raw token asset balances across columns
     for idx, (asset, amount) in enumerate(live_balances.items()):
-        cols[idx].metric(f"Total Asset Balance ({asset})", f"{amount:,.4f}")
+        cols[idx].metric(f"Total Balance ({asset})", f"${amount:,.2f}")
+        
+    # 2. Render localized operational ROI performance tracker card in the final column
+    cols[total_assets_count].metric(
+        label=f"Account Return on Investment (ROI)",
+        value=f"{net_roi_percent:+.2f}%",
+        delta=f"${(primary_stable_balance - INITIAL_ACCOUNT_SEED):+,.2f} Total Drift",
+        help=f"Calculated performance yield derived from your configured initial seed baseline of ${INITIAL_ACCOUNT_SEED:,.2f}"
+    )
+else:
+    st.warning("⚠️ No asset wallet balances returned from the endpoint check. Verify account margin distribution layers.")
 else:
     st.warning("⚠️ No asset wallet balances returned from the endpoint check. Verify account margin distribution layers.")
 
