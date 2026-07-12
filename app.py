@@ -105,73 +105,64 @@ def fetch_live_account_and_sync():
         except Exception as pos_err:
             st.warning(f"Could not load open positions from Live Account terminal: {pos_err}")
 
-        # --- B. MULTI-CHANNELS HISTORIC TRADE EXTRACTION SYSTEM ---
+        # --- B. DEEP-SWEEP CHRONOLOGICAL ORDER LEDGERS (TRADINGVIEW WEBHOOK FALLBACK) ---
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
-        all_fetched_trades = []
+        consolidated_orders = []
         
-        # Method 1: Target primary trade log endpoints
-        for t_type in ['SWAP', 'MARGIN']:
-            try:
-                chunk = exchange.fetch_my_trades(symbol=None, since=thirty_days_ago, limit=100, params={'instType': t_type})
-                if chunk: all_fetched_trades.extend(chunk)
-            except: pass
-
-        # Method 2: Target Unified Ledger streams if trade logs returned blank (catches TV integrations)
-        if not all_fetched_trades:
-            try:
-                # Queries type 1 (Trade fills) and type 2 (Trade PnL statements) from financial logs
-                ledger_entries = exchange.fetch_ledger(symbol=None, since=thirty_days_ago, limit=100)
-                for entry in ledger_entries:
-                    if entry.get('type') in ['trade', 'pnl', 'fee']:
-                        # standardizing to trade-like format schemas
-                        all_fetched_trades.append({
-                            'id': entry['id'],
-                            'symbol': entry.get('symbol', 'CryptoAsset'),
-                            'side': 'LONG' if float(entry.get('amount', 0)) >= 0 else 'SHORT',
-                            'datetime': entry['datetime'],
-                            'price': float(entry.get('price', 1)),
-                            'amount': abs(float(entry.get('amount', 0))),
-                            'fee_cost': abs(float(entry.get('fee', {}).get('cost', 0))),
-                            'pnl_val': float(entry.get('info', {}).get('pnl', 0))
-                        })
-            except: pass
+        # Scans both SWAP and MARGIN instrument types for filled orders
+        target_types = ['SWAP', 'MARGIN']
+        scanned_counts = {"SWAP": 0, "MARGIN": 0}
         
-        if all_fetched_trades:
+        for inst_type in target_types:
+            try:
+                orders = exchange.fetch_closed_orders(
+                    symbol=None, 
+                    since=thirty_days_ago, 
+                    limit=100, 
+                    params={'instType': inst_type}
+                )
+                if orders:
+                    # Filter out canceled or completely unfilled order iterations
+                    filled_orders = [o for o in orders if o.get('status') == 'closed' or float(o.get('filled', 0)) > 0]
+                    consolidated_orders.extend(filled_orders)
+                    scanned_counts[inst_type] = len(filled_orders)
+            except Exception as order_err:
+                pass
+        
+        if consolidated_orders:
             new_records = 0
-            for t in all_fetched_trades:
-                trade_id = str(t['id'])
+            for o in consolidated_orders:
+                order_id = str(o['id'])
                 
-                # Check for duplicate tracking entries in your storage warehouse
-                existing = supabase.table("advanced_journal").select("id").eq("id", trade_id).execute()
+                # Deduplication barrier check against Supabase
+                existing = supabase.table("advanced_journal").select("id").eq("id", order_id).execute()
                 
                 if len(existing.data) == 0:
-                    # Parse standard trade layout vs ledger dictionary items
-                    is_ledger = 'pnl_val' in t
-                    net_pnl_calc = t['pnl_val'] if is_ledger else float(t.get('fee', {}).get('cost', 0) * -1)
-                    fee_calc = t['fee_cost'] if is_ledger else float(t.get('fee', {}).get('cost', 0))
+                    # Extract values or fallback safely
+                    fee_cost = float(o.get('fee', {}).get('cost', 0)) if o.get('fee') else 0.0
+                    raw_pnl = float(o.get('info', {}).get('pnl', 0.0))
                     
-                    # Ensure non-zero or clean tracking states
-                    if is_ledger and net_pnl_calc == 0 and fee_calc == 0:
-                        continue
-                        
-                    trade_data = {
-                        "id": trade_id,
-                        "symbol": t['symbol'],
-                        "side": t['side'].upper(),
-                        "entry_date": t['datetime'],
-                        "exit_date": t['datetime'],
-                        "avg_entry_price": float(t['price']),
-                        "avg_exit_price": float(t['price']),
-                        "amount": float(t['amount']),
-                        "gross_pnl": float(net_pnl_calc + fee_calc) if is_ledger else float(net_pnl_calc),
-                        "fees": float(fee_calc),
-                        "net_pnl": float(net_pnl_calc)
+                    # If OKX order info structure doesn't output plain net PnL, build standard proxy logic
+                    net_pnl_calc = raw_pnl if raw_pnl != 0.0 else float(fee_cost * -1)
+                    
+                    order_data = {
+                        "id": order_id,
+                        "symbol": o['symbol'],
+                        "side": o['side'].upper(),
+                        "entry_date": o['datetime'],
+                        "exit_date": o['datetime'],
+                        "avg_entry_price": float(o.get('average', o.get('price', 1))),
+                        "avg_exit_price": float(o.get('average', o.get('price', 1))),
+                        "amount": float(o.get('filled', o.get('amount', 0))),
+                        "gross_pnl": float(net_pnl_calc + fee_cost),
+                        "fees": fee_cost,
+                        "net_pnl": net_pnl_calc
                     }
-                    supabase.table("advanced_journal").insert(trade_data).execute()
+                    supabase.table("advanced_journal").insert(order_data).execute()
                     new_records += 1
-            sync_status = f"Sync Completed! Tracked pipeline streams. Generated updates."
+            sync_status = f"Sync Completed! Found {scanned_counts['SWAP']} Swap & {scanned_counts['MARGIN']} Margin completed webhook orders. Added {new_records} new items."
         else:
-            sync_status = "No recent executions or ledger variations detected on your Live Account within 30 days."
+            sync_status = f"No recent closed orders found on your Live Account within 30 days (Scanned: Swap=0, Margin=0)."
             
     except Exception as e:
         sync_status = f"API Synchronization Bridge Warning: {str(e)}"
@@ -263,7 +254,7 @@ st.markdown("## 🗄️ Vault Metrics & Performance Telemetry")
 
 if df.empty:
     st.info("Your permanent historical database vault table is currently empty.")
-    st.warning(f"Sync Gateway Log: {sync_status}")
+    st.warning(f"Sync Diagnostics: {sync_status}")
 else:
     if mode == "🔗 Live Account Sync":
         st.toast(sync_status, icon="🔄")
