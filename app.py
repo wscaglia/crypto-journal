@@ -180,7 +180,7 @@ def load_history_from_db():
         st.error(f"Error accessing database warehouse: {e}")
         return pd.DataFrame()
 
-# 🚨 DIRECTIONAL TRAP RESOLVED: Group by initial strategic intent, not order execution legs
+# DIRECTIONAL TRAP RESOLVED: Group by initial strategic intent, not order execution legs
     if mode == "🔮 Preview Simulation Mode":
         longs_count = len(clean_df[clean_df['side'] == 'LONG'])
         shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
@@ -196,7 +196,7 @@ def load_history_from_db():
     total_direction_sum = longs_count + shorts_count
     long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
     short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
-
+    
 # 5. MATHEMATICS & METRICS COMPILER
 if not df.empty:
     df = df.sort_values(by="exit_date").reset_index(drop=True)
