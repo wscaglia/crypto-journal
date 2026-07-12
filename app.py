@@ -233,8 +233,9 @@ if not df.empty:
     avg_holding_time = clean_df['holding_time_hours'].mean()
     
     # Long vs Short
-    longs_count = len(clean_df[clean_df['side'] == 'LONG'])
-    shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
+    # Captures both variations (BUY/LONG and SELL/SHORT) depending on endpoint formats
+    longs_count = len(clean_df[clean_df['side'].str.upper().isin(['LONG', 'BUY'])])
+    shorts_count = len(clean_df[clean_df['side'].str.upper().isin(['SHORT', 'SELL'])])
     long_pct = (longs_count / total_trades) * 100 if total_trades > 0 else 0
     short_pct = (shorts_count / total_trades) * 100 if total_trades > 0 else 0
     
