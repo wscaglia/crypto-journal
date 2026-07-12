@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import ccxt
+import calendar
+from datetime import datetime
 from supabase import create_client, Client
 
 # 1. PAGE SETUP
@@ -113,7 +115,7 @@ def fetch_live_account_and_sync():
         except:
             pass
 
-        # --- C. DEEP-SWEEP COMPLETED ORDERS (WEBHOOK ORDER ROUTER EXTRACTION) ---
+        # --- C. DEEP-SWEEP COMPLETED ORDERS ---
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
         consolidated_orders = []
         
@@ -197,18 +199,26 @@ else:
 if not df.empty:
     df = df.sort_values(by="exit_date").reset_index(drop=True)
     
-    # Stratified Performance Segments
-    wins = df[df['net_pnl'] > 0]
-    losses = df[df['net_pnl'] <= 0]
+    # 🚨 FIX 1: FILTER OUT ZERO-TRADING SYSTEM NOISE (Canceled fills where Net PnL matches exactly negative Fees)
+    # Gross Profit = net_pnl + fees. If gross profit is 0, it's an exchange artifact, not a strategic win/loss trade.
+    df['gross_profit_before_fees'] = df['net_pnl'] + df['fees']
+    clean_df = df[df['gross_profit_before_fees'].round(4) != 0.0].copy()
     
-    total_trades = len(df)
+    if clean_df.empty:
+        clean_df = df.copy() # Fallback safety check if table contains only small artifacts
+        
+    wins = clean_df[clean_df['net_pnl'] > 0]
+    losses = clean_df[clean_df['net_pnl'] <= 0]
+    
+    total_trades = len(clean_df)
     win_count = len(wins)
     loss_count = len(losses)
     win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
     
     # Financial Sums
     sum_rewards = wins['net_pnl'].sum()
-    sum_losses = losses['net_pnl'].sum() # Negative value representing absolute loss scale
+    sum_losses = losses['net_pnl'].sum()
+    sum_total_fees = df['fees'].sum() # 🚨 METRIC UPGRADE: Pulling from full df to catch all aggregate trading fees
     
     total_gross_profits = sum_rewards
     total_gross_losses = abs(sum_losses)
@@ -216,25 +226,20 @@ if not df.empty:
     
     avg_win = wins['net_pnl'].mean() if not wins.empty else 0
     avg_loss = abs(losses['net_pnl'].mean()) if not losses.empty else 1
-    
-    # Average Risk:Reward Ratio (Calculated based on Average Reward Size vs Average Risk Size)
     avg_risk_reward = avg_win / avg_loss if avg_loss > 0 else 0
     
-    expected_value = ((win_rate / 100) * avg_win) + ((1 - (win_rate / 100)) * (avg_loss * -1))
-    
     # Compute Durations
-    df['holding_time_hours'] = (df['exit_date'] - df['entry_date']).dt.total_seconds() / 3600
-    avg_holding_time = df['holding_time_hours'].mean()
+    clean_df['holding_time_hours'] = (clean_df['exit_date'] - clean_df['entry_date']).dt.total_seconds() / 3600
+    avg_holding_time = clean_df['holding_time_hours'].mean()
     
-    # Long vs Short Directional Ratio Compilation
-    longs_count = len(df[df['side'] == 'LONG'])
-    shorts_count = len(df[df['side'] == 'SHORT'])
+    # Long vs Short
+    longs_count = len(clean_df[clean_df['side'] == 'LONG'])
+    shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
     long_pct = (longs_count / total_trades) * 100 if total_trades > 0 else 0
     short_pct = (shorts_count / total_trades) * 100 if total_trades > 0 else 0
     
     # Cumulative Curves
     df['cumulative_pnl'] = df['net_pnl'].cumsum()
-    
     running_pf = []
     for i in range(1, len(df) + 1):
         sub = df.iloc[:i]
@@ -243,29 +248,19 @@ if not df.empty:
         running_pf.append(w_sum / l_sum if l_sum > 0 else w_sum)
     df['running_profit_factor'] = running_pf
 
-    # Day-of-Week Distribution Layout Matrix
-    df['day_of_week'] = df['exit_date'].dt.day_name()
-    day_order = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    # 🚨 FIX 2: INTERACTIVE CALENDAR GENERATION GRID ENGINE
+    # Extract structural dates based on your actual executions dataset
+    latest_date = df['exit_date'].max()
+    target_year = latest_date.year
+    target_month = latest_date.month
+    month_name = calendar.month_name[target_month]
     
-    # Compile metrics per day for the Trading Calendar table
-    calendar_metrics = []
-    for day in day_order:
-        day_df = df[df['day_of_week'] == day]
-        if not day_df.empty:
-            day_pnl = day_df['net_pnl'].sum()
-            day_volume = len(day_df)
-            day_wins = len(day_df[day_df['net_pnl'] > 0])
-            day_wr = (day_wins / day_volume) * 100
-        else:
-            day_pnl, day_volume, day_wr = 0.0, 0, 0.0
-            
-        calendar_metrics.append({
-            "Calendar Day": day,
-            "Total Closed Trades": day_volume,
-            "Win Rate (%)": f"{day_wr:.1f}%",
-            "Net Session Performance ($)": day_pnl
-        })
-    calendar_table_df = pd.DataFrame(calendar_metrics)
+    # Group execution values by clean calendar dates
+    df['calendar_day'] = df['exit_date'].dt.day
+    daily_pnl_map = df.groupby('calendar_day')['net_pnl'].sum().to_dict()
+    
+    # Get structural month day maps
+    month_calendar = calendar.monthcalendar(target_year, target_month)
 
 # 6. APP RENDERING LAYOUT
 st.title("⚡ AlphaQuant Advanced Analytics Workspace")
@@ -307,9 +302,9 @@ else:
         st.toast(sync_status, icon="🔄")
 
     # PRIMARY PERFORMANCE MATRIX BLOCKS
-    st.markdown("### 📊 Primary Metric Matrix Blocks")
+    st.markdown("### 📊 Primary Performance Metrics")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Win Rate", f"{win_rate:.2f}%", help="Percentage of trades executed that closed net positive.")
+    m1.metric("Win Rate (Filtered)", f"{win_rate:.2f}%", help="Percentage of strategic trades executed that closed net positive (excluding fee artifacts).")
     m2.metric("Profit Factor", f"{profit_factor:.2f}x", help="Gross Profits divided by Gross Losses.")
     m3.metric("Avg Risk:Reward Ratio", f"1 : {avg_risk_reward:.2f}", help="Average gross win payout size vs average gross loss sizing scale.")
     m4.metric("Avg Holding Time", f"{avg_holding_time:.2f} Hours", help="The mean operational lifespan resting inside an active contract.")
@@ -317,11 +312,12 @@ else:
 
     # SECONDARY COMPILER MATRIX BLOCKS
     st.markdown("### 📐 Distribution & Volume Stratification")
-    s1, s2, s3, s4 = st.columns(4)
+    s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("Sum up of Rewards (Gross Profit)", f"+${sum_rewards:,.2f}")
     s2.metric("Sum up of Losses (Gross Loss)", f"-${abs(sum_losses):,.2f}")
-    s3.metric("Winners vs Losses Count", f"{win_count} Wins / {loss_count} Losses", help="Total raw trade count broken into winners vs negative closures.")
-    s4.metric("Longs vs Shorts Ratio", f"{long_pct:.1f}% L / {short_pct:.1f}% S", help="Percentage balance layout between buy orders and short entries.")
+    s3.metric("Sum up of Trading Fees", f"${sum_total_fees:,.4f}", help="Aggregate accumulation of all commissions paid across all execution paths.")
+    s4.metric("Winners vs Losses Count", f"{win_count} W / {loss_count} L", help="Total raw trade count broken into winners vs negative closures (excluding fee noise).")
+    s5.metric("Longs vs Shorts Ratio", f"{long_pct:.1f}% L / {short_pct:.1f}% S")
 
     st.markdown("---")
 
@@ -330,7 +326,6 @@ else:
     c1, c2 = st.columns(2)
     with c1:
         st.write("**The Account Equity Curve (Cumulative Net PnL)**")
-        # 🚨 UPGRADED: Line chart replaced with a visual Area Chart filling the equity progression
         fig_equity = px.area(df, x="exit_date", y="cumulative_pnl", title="Chronological Account Value Scaling ($)")
         fig_equity.update_traces(line_color="#00FFCC", fillcolor="rgba(0, 255, 204, 0.15)", line_width=2)
         st.plotly_chart(fig_equity, use_container_width=True)
@@ -343,25 +338,61 @@ else:
 
     st.markdown("---")
 
-    # ROW 2: ASSET MAP & TRADING CALENDAR LAYOUT MATRIX
+    # ROW 2: ASSET MAP & NEW CUSTOM GRID CALENDAR VISUALIZATION
     st.markdown("### 📅 Temporal & Asset Matrix Mapping")
     c3, c4 = st.columns(2)
     with c3:
         st.write("**Win Rate Stratification by Contract Token**")
-        symbol_stats = df.groupby('symbol').apply(
+        symbol_stats = clean_df.groupby('symbol').apply(
             lambda x: (len(x[x['net_pnl'] > 0]) / len(x)) * 100 if len(x) > 0 else 0
         ).reset_index(name='Win Rate (%)')
         fig_sym_win = px.bar(symbol_stats, x='symbol', y='Win Rate (%)', text_auto='.1f', title="Win Rate % per Asset Matrix", color='Win Rate (%)', color_continuous_scale='Bluered')
         fig_sym_win.add_hline(y=50.0, line_dash="dot", line_color="white")
         st.plotly_chart(fig_sym_win, use_container_width=True)
+        
     with c4:
-        st.write("**📅 Weekly Trading Calendar Performance Grid**")
-        # 🚨 INSTALLED: Real grid matrix table mapping session metrics out from Sunday through Saturday
-        st.dataframe(
-            calendar_table_df,
-            use_container_width=True,
-            hide_index=True
-        )
+        st.write(f"**📅 Trading Performance Calendar Grid ({month_name} {target_year})**")
+        
+        # Rendering Calendar Week Header Rows
+        headers = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        grid_cols = st.columns(7)
+        for idx, day_head in enumerate(headers):
+            grid_cols[idx].markdown(f"<p style='text-align:center; font-weight:bold; margin-bottom:2px;'>{day_head}</p>", unsafe_allow_html=True)
+            
+        # Rendering Week Rows containing Day Cards
+        for week in month_calendar:
+            week_cols = st.columns(7)
+            for day_idx, day_num in enumerate(week):
+                if day_num == 0:
+                    # Empty space filler padding for days falling outside current month range
+                    week_cols[day_idx].markdown(
+                        "<div style='background-color:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); height:75px; border-radius:4px;'></div>", 
+                        unsafe_allow_html=True
+                    )
+                else:
+                    day_pnl = daily_pnl_map.get(day_num, 0.0)
+                    
+                    # Applying specific styling metrics depending on asset outcome distributions
+                    if day_pnl > 0.001:
+                        bg_style = "background-color: rgba(0, 255, 204, 0.12); border: 1px solid #00FFCC;"
+                        text_color = "color: #00FFCC;"
+                        pnl_str = f"+${day_pnl:,.2f}"
+                    elif day_pnl < -0.001:
+                        bg_style = "background-color: rgba(255, 75, 75, 0.12); border: 1px solid #FF4B4B;"
+                        text_color = "color: #FF4B4B;"
+                        pnl_str = f"-${abs(day_pnl):,.2f}"
+                    else:
+                        bg_style = "background-color: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);"
+                        text_color = "color: #888888;"
+                        pnl_str = "$0.00"
+                        
+                    card_html = f"""
+                    <div style='{bg_style} height:75px; border-radius:4px; padding:4px; display: flex; flex-direction: column; justify-content: space-between;'>
+                        <span style='font-size:12px; font-weight:bold; color:#ffffff;'>{day_num}</span>
+                        <span style='font-size:11px; font-weight:bold; text-align:right; {text_color}'>{pnl_str}</span>
+                    </div>
+                    """
+                    week_cols[day_idx].markdown(card_html, unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -371,8 +402,8 @@ else:
     with c5:
         st.write("**Rolling Mathematical Expected Value (EV)**")
         running_ev = []
-        for i in range(2, len(df) + 1):
-            sub = df.iloc[:i]
+        for i in range(2, len(clean_df) + 1):
+            sub = clean_df.iloc[:i]
             sub_w = sub[sub['net_pnl'] > 0]
             sub_l = sub[sub['net_pnl'] <= 0]
             w_r = len(sub_w) / len(sub)
@@ -380,12 +411,12 @@ else:
             a_l = abs(sub_l['net_pnl'].mean()) if not sub_l.empty else 0
             running_ev.append((w_r * a_w) + ((1 - w_r) * (a_l * -1)))
         
-        fig_ev = px.area(x=df['exit_date'].iloc[1:], y=running_ev, title="Edge Stability Trend ($ Value Expectancy per Execution)")
+        fig_ev = px.area(x=clean_df['exit_date'].iloc[1:], y=running_ev, title="Edge Stability Trend ($ Value Expectancy per Execution)")
         fig_ev.update_traces(line_color="#A100FF", fillcolor="rgba(161, 0, 255, 0.15)")
         st.plotly_chart(fig_ev, use_container_width=True)
     with c6:
         st.write("**Position Hold Duration Spectrum**")
-        fig_hist = px.histogram(df, x="holding_time_hours", color="side", barmode="overlay", title="Trade Lifetime Profile (Hours Spent Inside Contracts)")
+        fig_hist = px.histogram(clean_df, x="holding_time_hours", color="side", barmode="overlay", title="Trade Lifetime Profile (Hours Spent Inside Contracts)")
         st.plotly_chart(fig_hist, use_container_width=True)
 
     # HISTORIC LEDGER DATA GRID
