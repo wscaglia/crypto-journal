@@ -284,7 +284,7 @@ st.markdown("Deep-dive algorithmic performance telemetry and live margin risk ma
 
 # --- 💰 LIVE WALLET BALANCE & PERFORMANCE GAIN ENGINE ---
 st.markdown("## 💰 Live Account Balances & Performance ROI")
-INITIAL_ACCOUNT_SEED = 10000.00  
+INITIAL_ACCOUNT_SEED = 278.32  
 
 if live_balances:
     total_assets_count = len(live_balances)
