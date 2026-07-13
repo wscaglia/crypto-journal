@@ -4,7 +4,7 @@ import numpy as np
 import plotly.express as px
 import ccxt
 import calendar
-from datetime import datetime
+from datetime import datetime, timedelta
 from supabase import create_client, Client
 
 # 1. PAGE SETUP
@@ -38,6 +38,11 @@ supabase = get_supabase_client()
 # 4. DATA ENGINE (REAL EXCHANGE CONNECTOR & SYNC VS PREVIEW SIMULATION)
 st.sidebar.title("⚙️ Control Panel")
 mode = st.sidebar.radio("Data Engine Mode", ["🔗 Live Account Sync", "🔮 Preview Simulation Mode"])
+
+# 🚨 NEW: Added Timeframe Filter Selector to the sidebar
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 Data Filters")
+timeframe = st.sidebar.selectbox("Analysis Horizon", ["All Time", "Last 30 Days", "Last 7 Days"])
 
 def get_mock_data():
     """Generates 40 realistic closed trades across BTC/ETH contracts for preview modeling."""
@@ -116,6 +121,7 @@ def fetch_live_account_and_sync():
             pass
 
         # --- C. DEEP-SWEEP COMPLETED ORDERS ---
+        # Keep full 30-day sync active at the data level to populate the local Supabase warehouse
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
         consolidated_orders = []
         
@@ -199,12 +205,29 @@ else:
 if not df.empty:
     df = df.sort_values(by="exit_date").reset_index(drop=True)
     
-    # FILTER OUT ZERO-TRADING SYSTEM NOISE
-    df['gross_profit_before_fees'] = df['net_pnl'] + df['fees']
-    clean_df = df[df['gross_profit_before_fees'].round(4) != 0.0].copy()
+    # 🚨 NEW: App-side Timeframe Slicing Filter Interface
+    max_date_in_db = df['exit_date'].max()
+    if timeframe == "Last 7 Days":
+        cutoff = max_date_in_db - timedelta(days=7)
+        filtered_df = df[df['exit_date'] >= cutoff].copy()
+    elif timeframe == "Last 30 Days":
+        cutoff = max_date_in_db - timedelta(days=30)
+        filtered_df = df[df['exit_date'] >= cutoff].copy()
+    else:
+        filtered_df = df.copy() # All Time default state
+        
+    # Process analytical layers strictly on the filtered dataframe subset
+    if filtered_df.empty:
+        # Fallback security if a short timeframe window yields zero records
+        filtered_df = df.copy()
+        st.sidebar.warning(f"No records inside selected window. Defaulting view to All Time.")
+
+    # FILTER OUT ZERO-TRADING SYSTEM NOISE ON SELECTED TIME HORIZON
+    filtered_df['gross_profit_before_fees'] = filtered_df['net_pnl'] + filtered_df['fees']
+    clean_df = filtered_df[filtered_df['gross_profit_before_fees'].round(4) != 0.0].copy()
     
     if clean_df.empty:
-        clean_df = df.copy()
+        clean_df = filtered_df.copy()
         
     wins = clean_df[clean_df['net_pnl'] > 0]
     losses = clean_df[clean_df['net_pnl'] <= 0]
@@ -217,7 +240,7 @@ if not df.empty:
     # Financial Sums
     sum_rewards = wins['net_pnl'].sum()
     sum_losses = losses['net_pnl'].sum()
-    sum_total_fees = df['fees'].sum()
+    sum_total_fees = filtered_df['fees'].sum() 
     
     total_gross_profits = sum_rewards
     total_gross_losses = abs(sum_losses)
@@ -258,33 +281,34 @@ if not df.empty:
     long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
     short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
     
-    # Cumulative Curves
-    df['cumulative_pnl'] = df['net_pnl'].cumsum()
+    # Cumulative Curves (Calculated relative to selected filtered trajectory)
+    filtered_df = filtered_df.sort_values(by="exit_date").reset_index(drop=True)
+    filtered_df['cumulative_pnl'] = filtered_df['net_pnl'].cumsum()
+    
     running_pf = []
-    for i in range(1, len(df) + 1):
-        sub = df.iloc[:i]
+    for i in range(1, len(filtered_df) + 1):
+        sub = filtered_df.iloc[:i]
         w_sum = sub[sub['net_pnl'] > 0]['net_pnl'].sum()
         l_sum = abs(sub[sub['net_pnl'] <= 0]['net_pnl'].sum())
         running_pf.append(w_sum / l_sum if l_sum > 0 else w_sum)
-    df['running_profit_factor'] = running_pf
+    filtered_df['running_profit_factor'] = running_pf
 
     # CALENDAR MATRIX GENERATION
-    latest_date = df['exit_date'].max()
-    target_year = latest_date.year
-    target_month = latest_date.month
+    target_year = max_date_in_db.year
+    target_month = max_date_in_db.month
     month_name = calendar.month_name[target_month]
     
-    df['calendar_day'] = df['exit_date'].dt.day
-    daily_pnl_map = df.groupby('calendar_day')['net_pnl'].sum().to_dict()
+    filtered_df['calendar_day'] = filtered_df['exit_date'].dt.day
+    daily_pnl_map = filtered_df.groupby('calendar_day')['net_pnl'].sum().to_dict()
     month_calendar = calendar.monthcalendar(target_year, target_month)
 
 # 6. APP RENDERING LAYOUT
 st.title("⚡ AlphaQuant Advanced Analytics Workspace")
-st.markdown("Deep-dive algorithmic performance telemetry and live margin risk mapping.")
+st.markdown(f"Deep-dive algorithmic performance telemetry and live margin risk mapping. (Viewing: **{timeframe}**)")
 
 # --- 💰 LIVE WALLET BALANCE & PERFORMANCE GAIN ENGINE ---
 st.markdown("## 💰 Live Account Balances & Performance ROI")
-INITIAL_ACCOUNT_SEED = 278.32  
+INITIAL_ACCOUNT_SEED = 10000.00  
 
 if live_balances:
     total_assets_count = len(live_balances)
@@ -329,7 +353,7 @@ if df.empty:
     st.warning(f"Sync Diagnostics: {sync_status}")
 else:
     if mode == "🔗 Live Account Sync":
-        st.toast(sync_status, icon="🔄")
+        st.toast(f"{sync_status} (Display slice: {timeframe})", icon="🔄")
 
     # PRIMARY PERFORMANCE MATRIX BLOCKS
     st.markdown("### 📊 Primary Performance Metrics")
@@ -338,7 +362,7 @@ else:
     m2.metric("Profit Factor", f"{profit_factor:.2f}x", help="Gross Profits divided by Gross Losses.")
     m3.metric("Avg Risk:Reward Ratio", f"1 : {avg_risk_reward:.2f}", help="Average gross win payout size vs average gross loss sizing scale.")
     m4.metric("Avg Holding Time", f"{avg_holding_time:.2f} Hours", help="The mean operational lifespan resting inside an active contract.")
-    m5.metric("Net Vault PnL", f"${df['net_pnl'].sum():,.2f}")
+    m5.metric("Net Vault PnL", f"${filtered_df['net_pnl'].sum():,.2f}")
 
     # SECONDARY COMPILER MATRIX BLOCKS
     st.markdown("### 📐 Distribution & Volume Stratification")
@@ -356,12 +380,12 @@ else:
     c1, c2 = st.columns(2)
     with c1:
         st.write("**The Account Equity Curve (Cumulative Net PnL)**")
-        fig_equity = px.area(df, x="exit_date", y="cumulative_pnl", title="Chronological Account Value Scaling ($)")
+        fig_equity = px.area(filtered_df, x="exit_date", y="cumulative_pnl", title="Chronological Account Value Scaling ($)")
         fig_equity.update_traces(line_color="#00FFCC", fillcolor="rgba(0, 255, 204, 0.15)", line_width=2)
         st.plotly_chart(fig_equity, use_container_width=True)
     with c2:
         st.write("**Running Profit Factor Trend**")
-        fig_pf = px.line(df, x="exit_date", y="running_profit_factor", title="System Health Factor Decay Progression", markers=True)
+        fig_pf = px.line(filtered_df, x="exit_date", y="running_profit_factor", title="System Health Factor Decay Progression", markers=True)
         fig_pf.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Breakeven Vector")
         fig_pf.update_traces(line_color="#FFCC00")
         st.plotly_chart(fig_pf, use_container_width=True)
@@ -448,7 +472,7 @@ else:
     # HISTORIC LEDGER DATA GRID
     st.markdown("---")
     st.subheader("📝 Historic Trade Ledger Vault Records")
-    display_df = df.rename(columns={
+    display_df = filtered_df.rename(columns={
         "entry_date": "Entry Date/Time",
         "exit_date": "Exit Date/Time",
         "symbol": "Contract Symbol",
