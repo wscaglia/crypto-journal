@@ -233,7 +233,7 @@ if not df.empty:
     loss_count = len(losses)
     win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
     
-    # Rewards = Number of Winners - Number of Losses
+    # Rewards Score = Winners - Losses
     rewards_count = win_count - loss_count
     
     # Financial Sums
@@ -288,9 +288,16 @@ if not df.empty:
     long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
     short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
     
-    # Cumulative Curves
+    # Cumulative Curves & Running Drawdown Math
     filtered_df = filtered_df.sort_values(by="exit_date").reset_index(drop=True)
     filtered_df['cumulative_pnl'] = filtered_df['net_pnl'].cumsum()
+    
+    # 🚨 DRAWDOWN CALCULATOR
+    # Drawdown % = ((Cumulative PnL + Seed) - Running Peak) / Running Peak * 100
+    starting_seed_baseline = 278.32
+    filtered_df['total_account_value'] = filtered_df['cumulative_pnl'] + starting_seed_baseline
+    filtered_df['running_peak'] = filtered_df['total_account_value'].cummax()
+    filtered_df['drawdown_percent'] = ((filtered_df['total_account_value'] - filtered_df['running_peak']) / filtered_df['running_peak']) * 100
     
     running_pf = []
     for i in range(1, len(filtered_df) + 1):
@@ -363,7 +370,6 @@ else:
         st.toast(f"{sync_status} (Display slice: {timeframe})", icon="🔄")
 
     # PRIMARY PERFORMANCE MATRIX BLOCKS
-    # 🚨 UPGRADED: Expanded to 6 columns. Rewards Score has been moved here!
     st.markdown("### 📊 Primary Performance Metrics")
     m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Win Rate (Filtered)", f"{win_rate:.2f}%", help="Percentage of strategic trades executed that closed net positive.")
@@ -379,7 +385,6 @@ else:
     m6.metric("Net Vault PnL", f"${filtered_df['net_pnl'].sum():,.2f}")
 
     # SECONDARY COMPILER MATRIX BLOCKS
-    # 🚨 UPGRADED: Rebalanced down to 5 columns.
     st.markdown("### 📐 Distribution & Volume Stratification")
     s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("Sum up of Rewards (Gross Profit)", f"+${sum_rewards:,.2f}")
@@ -394,7 +399,7 @@ else:
 
     st.markdown("---")
 
-    # ROW 1 CHARTS: AREA GROWTH CURVES & STABILITY DECAY
+    # ROW 1 CHARTS: AREA GROWTH CURVES & NEW EQUITIES DRAWDOWN VISUALIZER
     st.markdown("### 📈 Capital Growth Vectors")
     c1, c2 = st.columns(2)
     with c1:
@@ -403,25 +408,34 @@ else:
         fig_equity.update_traces(line_color="#00FFCC", fillcolor="rgba(0, 255, 204, 0.15)", line_width=2)
         st.plotly_chart(fig_equity, use_container_width=True)
     with c2:
-        st.write("**Running Profit Factor Trend**")
-        fig_pf = px.line(filtered_df, x="exit_date", y="running_profit_factor", title="System Health Factor Decay Progression", markers=True)
-        fig_pf.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Breakeven Vector")
-        fig_pf.update_traces(line_color="#FFCC00")
-        st.plotly_chart(fig_pf, use_container_width=True)
+        # 🚨 NEW CHART: Active percentage drawdown visually displayed below high-watermark peaks
+        st.write("**Account Equity Drawdown Performance Decay (%)**")
+        fig_dd = px.area(filtered_df, x="exit_date", y="drawdown_percent", title="Running Portfolio Drawdown Profile")
+        fig_dd.update_traces(line_color="#FF4B4B", fillcolor="rgba(255, 75, 75, 0.15)", line_width=2)
+        st.plotly_chart(fig_dd, use_container_width=True)
 
     st.markdown("---")
 
-    # ROW 2: ASSET MAP & CUSTOM GRID CALENDAR VISUALIZATION
+    # ROW 2: ASSET MAP & NEW WINNERS VS LOSSES PIE/DONUT CHART
     st.markdown("### 📅 Temporal & Asset Matrix Mapping")
     c3, c4 = st.columns(2)
     with c3:
-        st.write("**Win Rate Stratification by Contract Token**")
-        symbol_stats = clean_df.groupby('symbol').apply(
-            lambda x: (len(x[x['net_pnl'] > 0]) / len(x)) * 100 if len(x) > 0 else 0
-        ).reset_index(name='Win Rate (%)')
-        fig_sym_win = px.bar(symbol_stats, x='symbol', y='Win Rate (%)', text_auto='.1f', title="Win Rate % per Asset Matrix", color='Win Rate (%)', color_continuous_scale='Bluered')
-        fig_sym_win.add_hline(y=50.0, line_dash="dot", line_color="white")
-        st.plotly_chart(fig_sym_win, use_container_width=True)
+        # 🚨 NEW CHART: Beautiful Pie/Donut Chart visualizing Wins vs Losses
+        st.write("**Winners vs Losses Stratification Profile**")
+        pie_data = pd.DataFrame({
+            "Classification": ["Winners", "Losses"],
+            "Trade Count": [win_count, loss_count]
+        })
+        fig_pie = px.pie(
+            pie_data, 
+            values="Trade Count", 
+            names="Classification", 
+            hole=0.45,
+            color="Classification",
+            color_discrete_map={"Winners": "#00FFCC", "Losses": "#FF4B4B"}
+        )
+        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(fig_pie, use_container_width=True)
         
     with c4:
         st.write(f"**📅 Trading Performance Calendar Grid ({month_name} {target_year})**")
@@ -465,24 +479,15 @@ else:
 
     st.markdown("---")
 
-    # ROW 3 CHARTS: MATHEMATICAL EXPECTANCY & SPECTRUM
-    st.markdown("### 🎯 Mathematical Value Mapping")
+    # ROW 3 CHARTS: SYSTEM HEALTH & HOLD TIME HISTOGRAM
+    st.markdown("### 🎯 System Health & Telemetry Vectors")
     c5, c6 = st.columns(2)
     with c5:
-        st.write("**Rolling Mathematical Expected Value (EV)**")
-        running_ev = []
-        for i in range(2, len(clean_df) + 1):
-            sub = clean_df.iloc[:i]
-            sub_w = sub[sub['net_pnl'] > 0]
-            sub_l = sub[sub['net_pnl'] <= 0]
-            w_r = len(sub_w) / len(sub)
-            a_w = sub_w['net_pnl'].mean() if not sub_w.empty else 0
-            a_l = abs(sub_l['net_pnl'].mean()) if not sub_l.empty else 0
-            running_ev.append((w_r * a_w) + ((1 - w_r) * (a_l * -1)))
-        
-        fig_ev = px.area(x=clean_df['exit_date'].iloc[1:], y=running_ev, title="Edge Stability Trend ($ Value Expectancy per Execution)")
-        fig_ev.update_traces(line_color="#A100FF", fillcolor="rgba(161, 0, 255, 0.15)")
-        st.plotly_chart(fig_ev, use_container_width=True)
+        st.write("**Running System Profit Factor Trend**")
+        fig_pf = px.line(filtered_df, x="exit_date", y="running_profit_factor", title="System Health Factor Decay Progression", markers=True)
+        fig_pf.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Breakeven Vector")
+        fig_pf.update_traces(line_color="#FFCC00")
+        st.plotly_chart(fig_pf, use_container_width=True)
     with c6:
         st.write("**Position Hold Duration Spectrum**")
         fig_hist = px.histogram(clean_df, x="holding_time_hours", color="side", barmode="overlay", title="Trade Lifetime Profile (Hours Spent Inside Contracts)")
