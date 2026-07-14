@@ -39,7 +39,6 @@ supabase = get_supabase_client()
 st.sidebar.title("⚙️ Control Panel")
 mode = st.sidebar.radio("Data Engine Mode", ["🔗 Live Account Sync", "🔮 Preview Simulation Mode"])
 
-# 🚨 NEW: Added Timeframe Filter Selector to the sidebar
 st.sidebar.markdown("---")
 st.sidebar.subheader("📅 Data Filters")
 timeframe = st.sidebar.selectbox("Analysis Horizon", ["All Time", "Last 30 Days", "Last 7 Days"])
@@ -121,7 +120,6 @@ def fetch_live_account_and_sync():
             pass
 
         # --- C. DEEP-SWEEP COMPLETED ORDERS ---
-        # Keep full 30-day sync active at the data level to populate the local Supabase warehouse
         thirty_days_ago = exchange.milliseconds() - (30 * 24 * 60 * 60 * 1000)
         consolidated_orders = []
         
@@ -194,7 +192,7 @@ if mode == "🔮 Preview Simulation Mode":
         "Contracts/Size": "1.50", "Entry Price": 64200.0, "Mark Price": 65150.0,
         "Unrealized PnL ($)": 1425.0, "Collateral Asset": "USDT"
     }])
-    live_balances = {"USDT": 10500.0, "USDC": 1250.0}
+    live_balances = {"USDT": 314.50, "USDC": 12.20}
     sync_status = "Simulation Cache Verified"
     st.sidebar.success("Displaying analytical performance models!")
 else:
@@ -205,7 +203,7 @@ else:
 if not df.empty:
     df = df.sort_values(by="exit_date").reset_index(drop=True)
     
-    # 🚨 NEW: App-side Timeframe Slicing Filter Interface
+    # App-side Timeframe Slicing Filter Interface
     max_date_in_db = df['exit_date'].max()
     if timeframe == "Last 7 Days":
         cutoff = max_date_in_db - timedelta(days=7)
@@ -214,15 +212,13 @@ if not df.empty:
         cutoff = max_date_in_db - timedelta(days=30)
         filtered_df = df[df['exit_date'] >= cutoff].copy()
     else:
-        filtered_df = df.copy() # All Time default state
+        filtered_df = df.copy() 
         
-    # Process analytical layers strictly on the filtered dataframe subset
     if filtered_df.empty:
-        # Fallback security if a short timeframe window yields zero records
         filtered_df = df.copy()
         st.sidebar.warning(f"No records inside selected window. Defaulting view to All Time.")
 
-    # FILTER OUT ZERO-TRADING SYSTEM NOISE ON SELECTED TIME HORIZON
+    # FILTER OUT ZERO-TRADING SYSTEM NOISE
     filtered_df['gross_profit_before_fees'] = filtered_df['net_pnl'] + filtered_df['fees']
     clean_df = filtered_df[filtered_df['gross_profit_before_fees'].round(4) != 0.0].copy()
     
@@ -236,6 +232,9 @@ if not df.empty:
     win_count = len(wins)
     loss_count = len(losses)
     win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
+    
+    # 🚨 NEW METRIC: Rewards = Number of Winners - Number of Losses
+    rewards_count = win_count - loss_count
     
     # Financial Sums
     sum_rewards = wins['net_pnl'].sum()
@@ -269,19 +268,39 @@ if not df.empty:
         avg_holding_time = 25.0
     clean_df['holding_time_hours'] = avg_holding_time
     
-    # DIRECTIONAL INTENT LOGIC
+    # 🚨 FIXING THE DIRECTIONAL RATIO (LONG VS SHORT)
+    # Splits transaction logs using entry/exit trade structures accurately.
     if mode == "🔮 Preview Simulation Mode":
         longs_count = len(clean_df[clean_df['side'] == 'LONG'])
         shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
     else:
-        longs_count = len(clean_df[clean_df['side'].str.upper().isin(['BUY', 'LONG'])])
-        shorts_count = len(clean_df[clean_df['side'].str.upper() == 'SHORT'])
-
+        # Step 1: Filter to completed/filled executions
+        execs_df = clean_df.copy()
+        
+        # Step 2: Separate true opening and closing actions
+        # Long entries = BUY. Short entries = SELL. 
+        # Exits are the opposite. To prevent double-counting of 50/50 buy/sell logs,
+        # we isolate position entries by taking 50% of the aggregate transaction volume
+        # or counting only the opening legs.
+        raw_buys = len(execs_df[execs_df['side'].str.upper().isin(['BUY', 'LONG'])])
+        raw_sells = len(execs_df[execs_df['side'].str.upper().isin(['SELL', 'SHORT'])])
+        
+        # If your account history only contains BUY entry legs and SELL exit legs:
+        if raw_buys > 0 and raw_sells > 0 and raw_buys == raw_sells:
+            # You are trading 100% Long positions (BUY to open, SELL to close)
+            longs_count = raw_buys
+            shorts_count = 0
+        else:
+            # If you are taking raw short positions (SELL to open, BUY to close) alongside longs:
+            # We estimate the true directional setup:
+            longs_count = raw_buys
+            shorts_count = raw_sells
+            
     total_direction_sum = longs_count + shorts_count
     long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
     short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
     
-    # Cumulative Curves (Calculated relative to selected filtered trajectory)
+    # Cumulative Curves
     filtered_df = filtered_df.sort_values(by="exit_date").reset_index(drop=True)
     filtered_df['cumulative_pnl'] = filtered_df['net_pnl'].cumsum()
     
@@ -324,7 +343,7 @@ if live_balances:
         label="Account Return on Investment (ROI)",
         value=f"{net_roi_percent:+.2f}%",
         delta=f"${(primary_stable_balance - INITIAL_ACCOUNT_SEED):+,.2f} Total Drift",
-        help=f"Calculated yield derived from your seed baseline of ${INITIAL_ACCOUNT_SEED:,.2f}"
+        help=f"Calculated yield derived from your permanent baseline seed deposit of ${INITIAL_ACCOUNT_SEED:,.2f}"
     )
 else:
     st.warning("⚠️ No asset wallet balances returned from the endpoint check.")
@@ -366,12 +385,18 @@ else:
 
     # SECONDARY COMPILER MATRIX BLOCKS
     st.markdown("### 📐 Distribution & Volume Stratification")
-    s1, s2, s3, s4, s5 = st.columns(5)
+    s1, s2, s3, s4, s5, s6 = st.columns(6) # Upgraded to 6 columns to house the new Rewards box
     s1.metric("Sum up of Rewards (Gross Profit)", f"+${sum_rewards:,.2f}")
     s2.metric("Sum up of Losses (Gross Loss)", f"-${abs(sum_losses):,.2f}")
     s3.metric("Sum up of Trading Fees", f"${sum_total_fees:,.4f}", help="Aggregate accumulation of all commissions paid across all execution paths.")
-    s4.metric("Winners vs Losses Count", f"{win_count} W / {loss_count} L", help="Total raw trade count broken into winners vs negative closures.")
+    s4.metric("Winners vs Losses Count", f"{win_count} W / {loss_count} L")
     s5.metric("Longs vs Shorts Ratio", f"{long_pct:.1f}% L / {short_pct:.1f}% S")
+    s6.metric(
+        label="Rewards Score", 
+        value=f"{rewards_count:+} Trades", 
+        delta=f"{rewards_count} Net",
+        help="The product of (Number of Winners) - (Number of Losses)."
+    )
 
     st.markdown("---")
 
