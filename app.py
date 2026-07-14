@@ -389,7 +389,11 @@ else:
     s1.metric("Sum up of Rewards (Gross Profit)", f"+${sum_rewards:,.2f}")
     s2.metric("Sum up of Losses (Gross Loss)", f"-${abs(sum_losses):,.2f}")
     s3.metric("Sum up of Trading Fees", f"${sum_total_fees:,.4f}", help="Aggregate accumulation of all commissions paid across all execution paths.")
-    s4.metric("Winners vs Losses Count", f"{win_count} W / {loss_count} L")
+    s4.metric(
+        label="Winners vs Losses Count", 
+        value=f"{win_count} W / {loss_count} L / {total_trades} T",
+        help="Total execution volume split into Winning Trades (W), Losing Trades (L), and Cumulative Total Closed Trades (T)."
+    )
     s5.metric("Longs vs Shorts Ratio", f"{long_pct:.1f}% L / {short_pct:.1f}% S")
     s6.metric(
         label="Rewards Score", 
