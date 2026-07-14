@@ -233,7 +233,7 @@ if not df.empty:
     loss_count = len(losses)
     win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
     
-    # 🚨 NEW METRIC: Rewards = Number of Winners - Number of Losses
+    # Rewards = Number of Winners - Number of Losses
     rewards_count = win_count - loss_count
     
     # Financial Sums
@@ -268,31 +268,19 @@ if not df.empty:
         avg_holding_time = 25.0
     clean_df['holding_time_hours'] = avg_holding_time
     
-    # 🚨 FIXING THE DIRECTIONAL RATIO (LONG VS SHORT)
-    # Splits transaction logs using entry/exit trade structures accurately.
+    # DIRECTIONAL INTENT LOGIC
     if mode == "🔮 Preview Simulation Mode":
         longs_count = len(clean_df[clean_df['side'] == 'LONG'])
         shorts_count = len(clean_df[clean_df['side'] == 'SHORT'])
     else:
-        # Step 1: Filter to completed/filled executions
         execs_df = clean_df.copy()
-        
-        # Step 2: Separate true opening and closing actions
-        # Long entries = BUY. Short entries = SELL. 
-        # Exits are the opposite. To prevent double-counting of 50/50 buy/sell logs,
-        # we isolate position entries by taking 50% of the aggregate transaction volume
-        # or counting only the opening legs.
         raw_buys = len(execs_df[execs_df['side'].str.upper().isin(['BUY', 'LONG'])])
         raw_sells = len(execs_df[execs_df['side'].str.upper().isin(['SELL', 'SHORT'])])
         
-        # If your account history only contains BUY entry legs and SELL exit legs:
         if raw_buys > 0 and raw_sells > 0 and raw_buys == raw_sells:
-            # You are trading 100% Long positions (BUY to open, SELL to close)
             longs_count = raw_buys
             shorts_count = 0
         else:
-            # If you are taking raw short positions (SELL to open, BUY to close) alongside longs:
-            # We estimate the true directional setup:
             longs_count = raw_buys
             shorts_count = raw_sells
             
@@ -375,17 +363,25 @@ else:
         st.toast(f"{sync_status} (Display slice: {timeframe})", icon="🔄")
 
     # PRIMARY PERFORMANCE MATRIX BLOCKS
+    # 🚨 UPGRADED: Expanded to 6 columns. Rewards Score has been moved here!
     st.markdown("### 📊 Primary Performance Metrics")
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Win Rate (Filtered)", f"{win_rate:.2f}%", help="Percentage of strategic trades executed that closed net positive.")
     m2.metric("Profit Factor", f"{profit_factor:.2f}x", help="Gross Profits divided by Gross Losses.")
     m3.metric("Avg Risk:Reward Ratio", f"1 : {avg_risk_reward:.2f}", help="Average gross win payout size vs average gross loss sizing scale.")
     m4.metric("Avg Holding Time", f"{avg_holding_time:.2f} Hours", help="The mean operational lifespan resting inside an active contract.")
-    m5.metric("Net Vault PnL", f"${filtered_df['net_pnl'].sum():,.2f}")
+    m5.metric(
+        label="Rewards Score", 
+        value=f"{rewards_count:+} Trades", 
+        delta=f"{rewards_count} Net",
+        help="The product of (Number of Winners) - (Number of Losses)."
+    )
+    m6.metric("Net Vault PnL", f"${filtered_df['net_pnl'].sum():,.2f}")
 
     # SECONDARY COMPILER MATRIX BLOCKS
+    # 🚨 UPGRADED: Rebalanced down to 5 columns.
     st.markdown("### 📐 Distribution & Volume Stratification")
-    s1, s2, s3, s4, s5, s6 = st.columns(6) # Upgraded to 6 columns to house the new Rewards box
+    s1, s2, s3, s4, s5 = st.columns(5)
     s1.metric("Sum up of Rewards (Gross Profit)", f"+${sum_rewards:,.2f}")
     s2.metric("Sum up of Losses (Gross Loss)", f"-${abs(sum_losses):,.2f}")
     s3.metric("Sum up of Trading Fees", f"${sum_total_fees:,.4f}", help="Aggregate accumulation of all commissions paid across all execution paths.")
@@ -395,12 +391,6 @@ else:
         help="Total execution volume split into Winning Trades (W), Losing Trades (L), and Cumulative Total Closed Trades (T)."
     )
     s5.metric("Longs vs Shorts Ratio", f"{long_pct:.1f}% L / {short_pct:.1f}% S")
-    s6.metric(
-        label="Rewards Score", 
-        value=f"{rewards_count:+} Trades", 
-        delta=f"{rewards_count} Net",
-        help="The product of (Number of Winners) - (Number of Losses)."
-    )
 
     st.markdown("---")
 
