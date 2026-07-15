@@ -288,10 +288,13 @@ if not df.empty:
     long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
     short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
     
-    # Cumulative Curves & Drawdowns
+    # 🚨 UPGRADE: Sequential Math Compilation Index (Trade #1, Trade #2, Trade #3...)
+    # We force the dataframes to map to integer trade sequence numbers rather than arbitrary dates
     filtered_df = filtered_df.sort_values(by="exit_date").reset_index(drop=True)
+    filtered_df['Trade #'] = filtered_df.index + 1  # Sequential base
     filtered_df['cumulative_pnl'] = filtered_df['net_pnl'].cumsum()
     
+    # Drawdown math executed against structural trade index
     starting_seed_baseline = 278.32
     filtered_df['total_account_value'] = filtered_df['cumulative_pnl'] + starting_seed_baseline
     filtered_df['running_peak'] = filtered_df['total_account_value'].cummax()
@@ -397,13 +400,13 @@ else:
 
     st.markdown("---")
 
-    # ROW 1 CHARTS: SMOOTHED AREA GROWTH CURVES & EQUITIES DRAWDOWN VISUALIZER
-    st.markdown("### 📈 Capital Growth Vectors")
+    # ROW 1 CHARTS: SEQUENTIAL AREA GROWTH CURVES & SEQUENTIAL DRAWDOWN
+    st.markdown("### 📈 Capital Growth Vectors (Sequential Trade Progressions)")
     c1, c2 = st.columns(2)
     with c1:
         st.write("**The Account Equity Curve (Cumulative Net PnL)**")
-        fig_equity = px.area(filtered_df, x="exit_date", y="cumulative_pnl", title="Chronological Account Value Scaling ($)")
-        # 🚨 UPGRADE: Applied cubic spline line shape smoothing with custom tension setting
+        # 🚨 UPGRADE: Plotting on x="Trade #" (Trade 1, 2, 3...) instead of date timeline!
+        fig_equity = px.area(filtered_df, x="Trade #", y="cumulative_pnl", title="Sequential Trade Execution Scaling ($)")
         fig_equity.update_traces(
             line_shape="spline", 
             line_smoothing=1.3, 
@@ -414,8 +417,8 @@ else:
         st.plotly_chart(fig_equity, use_container_width=True)
     with c2:
         st.write("**Account Equity Drawdown Performance Decay (%)**")
-        fig_dd = px.area(filtered_df, x="exit_date", y="drawdown_percent", title="Running Portfolio Drawdown Profile")
-        # 🚨 UPGRADE: Applied cubic spline shape smoothing to drawdown visualization
+        # 🚨 UPGRADE: Plotting on x="Trade #" (Trade 1, 2, 3...) instead of date timeline!
+        fig_dd = px.area(filtered_df, x="Trade #", y="drawdown_percent", title="Sequential Trade Drawdown Profile")
         fig_dd.update_traces(
             line_shape="spline", 
             line_smoothing=1.3, 
@@ -504,8 +507,9 @@ else:
             a_l = abs(sub_l['net_pnl'].mean()) if not sub_l.empty else 0
             running_ev.append((w_r * a_w) + ((1 - w_r) * (a_l * -1)))
         
-        fig_ev = px.area(x=clean_df['exit_date'].iloc[1:], y=running_ev, title="Edge Stability Trend ($ Value Expectancy per Execution)")
-        # 🚨 UPGRADE: Applied cubic spline line shape smoothing to Rolling EV
+        # 🚨 UPGRADE: Convert expected value chart x-axis to Trade sequence index!
+        trades_idx_range = list(range(2, len(clean_df) + 1))
+        fig_ev = px.area(x=trades_idx_range, y=running_ev, title="Edge Stability Trend (Expectancy per Trade)")
         fig_ev.update_traces(
             line_shape="spline", 
             line_smoothing=1.3, 
@@ -515,7 +519,6 @@ else:
         st.plotly_chart(fig_ev, use_container_width=True)
     with c6:
         st.write("**Position Hold Duration Spectrum**")
-        # 🚨 UPGRADE: Set explicit, high-contrast greens/reds for Buy vs. Sell durations
         fig_hist = px.histogram(
             clean_df, 
             x="holding_time_hours", 
@@ -527,7 +530,7 @@ else:
                 "SELL": "#FF4B4B", "SHORT": "#FF4B4B"
             }
         )
-        fig_hist.update_traces(opacity=0.75) # Clean overlap opacity blend
+        fig_hist.update_traces(opacity=0.75)
         st.plotly_chart(fig_hist, use_container_width=True)
 
     # HISTORIC LEDGER DATA GRID
