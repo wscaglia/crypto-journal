@@ -288,12 +288,10 @@ if not df.empty:
     long_pct = (longs_count / total_direction_sum) * 100 if total_direction_sum > 0 else 100.0
     short_pct = (shorts_count / total_direction_sum) * 100 if total_direction_sum > 0 else 0.0
     
-    # Cumulative Curves & Running Drawdown Math
+    # Cumulative Curves & Drawdowns
     filtered_df = filtered_df.sort_values(by="exit_date").reset_index(drop=True)
     filtered_df['cumulative_pnl'] = filtered_df['net_pnl'].cumsum()
     
-    # 🚨 DRAWDOWN CALCULATOR
-    # Drawdown % = ((Cumulative PnL + Seed) - Running Peak) / Running Peak * 100
     starting_seed_baseline = 278.32
     filtered_df['total_account_value'] = filtered_df['cumulative_pnl'] + starting_seed_baseline
     filtered_df['running_peak'] = filtered_df['total_account_value'].cummax()
@@ -399,28 +397,40 @@ else:
 
     st.markdown("---")
 
-    # ROW 1 CHARTS: AREA GROWTH CURVES & NEW EQUITIES DRAWDOWN VISUALIZER
+    # ROW 1 CHARTS: SMOOTHED AREA GROWTH CURVES & EQUITIES DRAWDOWN VISUALIZER
     st.markdown("### 📈 Capital Growth Vectors")
     c1, c2 = st.columns(2)
     with c1:
         st.write("**The Account Equity Curve (Cumulative Net PnL)**")
         fig_equity = px.area(filtered_df, x="exit_date", y="cumulative_pnl", title="Chronological Account Value Scaling ($)")
-        fig_equity.update_traces(line_color="#00FFCC", fillcolor="rgba(0, 255, 204, 0.15)", line_width=2)
+        # 🚨 UPGRADE: Applied cubic spline line shape smoothing with custom tension setting
+        fig_equity.update_traces(
+            line_shape="spline", 
+            line_smoothing=1.3, 
+            line_color="#00FFCC", 
+            fillcolor="rgba(0, 255, 204, 0.15)", 
+            line_width=2
+        )
         st.plotly_chart(fig_equity, use_container_width=True)
     with c2:
-        # 🚨 NEW CHART: Active percentage drawdown visually displayed below high-watermark peaks
         st.write("**Account Equity Drawdown Performance Decay (%)**")
         fig_dd = px.area(filtered_df, x="exit_date", y="drawdown_percent", title="Running Portfolio Drawdown Profile")
-        fig_dd.update_traces(line_color="#FF4B4B", fillcolor="rgba(255, 75, 75, 0.15)", line_width=2)
+        # 🚨 UPGRADE: Applied cubic spline shape smoothing to drawdown visualization
+        fig_dd.update_traces(
+            line_shape="spline", 
+            line_smoothing=1.3, 
+            line_color="#FF4B4B", 
+            fillcolor="rgba(255, 75, 75, 0.15)", 
+            line_width=2
+        )
         st.plotly_chart(fig_dd, use_container_width=True)
 
     st.markdown("---")
 
-    # ROW 2: ASSET MAP & NEW WINNERS VS LOSSES PIE/DONUT CHART
+    # ROW 2: PIE CHART & CUSTOM GRID CALENDAR VISUALIZATION
     st.markdown("### 📅 Temporal & Asset Matrix Mapping")
     c3, c4 = st.columns(2)
     with c3:
-        # 🚨 NEW CHART: Beautiful Pie/Donut Chart visualizing Wins vs Losses
         st.write("**Winners vs Losses Stratification Profile**")
         pie_data = pd.DataFrame({
             "Classification": ["Winners", "Losses"],
@@ -483,14 +493,41 @@ else:
     st.markdown("### 🎯 System Health & Telemetry Vectors")
     c5, c6 = st.columns(2)
     with c5:
-        st.write("**Running System Profit Factor Trend**")
-        fig_pf = px.line(filtered_df, x="exit_date", y="running_profit_factor", title="System Health Factor Decay Progression", markers=True)
-        fig_pf.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Breakeven Vector")
-        fig_pf.update_traces(line_color="#FFCC00")
-        st.plotly_chart(fig_pf, use_container_width=True)
+        st.write("**Rolling Mathematical Expected Value (EV)**")
+        running_ev = []
+        for i in range(2, len(clean_df) + 1):
+            sub = clean_df.iloc[:i]
+            sub_w = sub[sub['net_pnl'] > 0]
+            sub_l = sub[sub['net_pnl'] <= 0]
+            w_r = len(sub_w) / len(sub)
+            a_w = sub_w['net_pnl'].mean() if not sub_w.empty else 0
+            a_l = abs(sub_l['net_pnl'].mean()) if not sub_l.empty else 0
+            running_ev.append((w_r * a_w) + ((1 - w_r) * (a_l * -1)))
+        
+        fig_ev = px.area(x=clean_df['exit_date'].iloc[1:], y=running_ev, title="Edge Stability Trend ($ Value Expectancy per Execution)")
+        # 🚨 UPGRADE: Applied cubic spline line shape smoothing to Rolling EV
+        fig_ev.update_traces(
+            line_shape="spline", 
+            line_smoothing=1.3, 
+            line_color="#A100FF", 
+            fillcolor="rgba(161, 0, 255, 0.15)"
+        )
+        st.plotly_chart(fig_ev, use_container_width=True)
     with c6:
         st.write("**Position Hold Duration Spectrum**")
-        fig_hist = px.histogram(clean_df, x="holding_time_hours", color="side", barmode="overlay", title="Trade Lifetime Profile (Hours Spent Inside Contracts)")
+        # 🚨 UPGRADE: Set explicit, high-contrast greens/reds for Buy vs. Sell durations
+        fig_hist = px.histogram(
+            clean_df, 
+            x="holding_time_hours", 
+            color="side", 
+            barmode="overlay", 
+            title="Trade Lifetime Profile (Hours Spent Inside Contracts)",
+            color_discrete_map={
+                "BUY": "#00FFCC", "LONG": "#00FFCC",
+                "SELL": "#FF4B4B", "SHORT": "#FF4B4B"
+            }
+        )
+        fig_hist.update_traces(opacity=0.75) # Clean overlap opacity blend
         st.plotly_chart(fig_hist, use_container_width=True)
 
     # HISTORIC LEDGER DATA GRID
